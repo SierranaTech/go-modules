@@ -1,0 +1,37 @@
+name: CI
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_name != 'main' }}
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.module }}
+    runs-on: homelab-small
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - module: obs
+    steps:
+      - name: Setup
+        uses: SierranaTech/actions/setup@main
+        with:
+          go: true
+          go-mod-directory: ${{ matrix.module }}
+      - name: Go suite
+        uses: SierranaTech/actions/go-suite@main
+        with:
+          working-directory: ${{ matrix.module }}
+          badge-prefix: ${{ matrix.module }}
+          run-report: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}

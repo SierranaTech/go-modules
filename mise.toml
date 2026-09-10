@@ -1,0 +1,35 @@
+[tools]
+go = "1.27"
+golangci-lint = "2.13"
+prek = "latest"
+
+[env]
+# Modules in this repo, space-separated. Add new submodule dirs here and every
+# task below picks them up. "." is the root module, added in a later phase.
+MODULES = "obs"
+
+[tasks.tidy]
+description = "go mod tidy every module"
+run = 'for m in $MODULES; do (cd "$m" && go mod tidy); done'
+
+[tasks.fmt]
+depends = ["tidy"]
+description = "gofmt the tree"
+run = "gofmt -w $(find . -name '*.go' -not -path './.git/*')"
+
+[tasks.fmt-check]
+description = "fail if any file needs gofmt"
+run = '''
+  out=$(gofmt -l $(find . -name '*.go' -not -path './.git/*'))
+  test -z "$out" || { echo "needs gofmt:"; echo "$out"; exit 1; }
+'''
+
+[tasks.lint]
+depends = ["fmt"]
+description = "go vet and golangci-lint every module"
+run = 'for m in $MODULES; do (cd "$m" && go vet ./... && golangci-lint run ./...); done'
+
+[tasks.test]
+depends = ["lint"]
+description = "race unit tests every module"
+run = 'for m in $MODULES; do (cd "$m" && go test ./... -count=1 -race --cover); done'

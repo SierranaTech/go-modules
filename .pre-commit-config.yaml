@@ -1,0 +1,31 @@
+# Managed with prek. Keep in sync with mise.toml tasks.
+repos:
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: mise run fmt-check
+        language: system
+        types: [go]
+        pass_filenames: false
+      - id: lint
+        name: go vet and golangci-lint
+        entry: mise run lint
+        language: system
+        types: [go]
+        pass_filenames: false
+      - id: test
+        name: go test -race
+        entry: mise run test
+        language: system
+        types: [go]
+        pass_filenames: false
+        stages: [pre-push]
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
