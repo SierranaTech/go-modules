@@ -43,3 +43,10 @@ the `repositories` input of the `private-modules-token` step.
 ```
 mise run test
 ```
+
+<!-- generated:quality-obs:start -->
+
+[![obs coverage](.github/badges/coverage-obs.svg)](obs/.artifacts/coverage-summary.txt)
+obs coverage: **90.2%**
+
+<!-- generated:quality-obs:end -->
