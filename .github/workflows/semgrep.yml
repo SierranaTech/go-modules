@@ -1,26 +1,28 @@
+name: Semgrep
+
 on:
   workflow_dispatch: {}
   pull_request: {}
   push:
     branches:
-    - main
-    - master
+      - main
     paths:
-    - .github/workflows/semgrep.yml
+      - .github/workflows/semgrep.yml
   schedule:
-  # random HH:MM to avoid a load spike on GitHub Actions at 00:00
-  - cron: 58 4 * * *
-name: Semgrep
+    # random HH:MM within 06:00-09:00 UTC to spread runner load
+    - cron: '21 08 * * *'
+
 jobs:
   semgrep:
     name: semgrep/ci
-    runs-on: ubuntu-latest
+    runs-on: homelab-micro
+    timeout-minutes: 10
     permissions:
       contents: read
     env:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
-    container:
-      image: semgrep/semgrep
     steps:
-    - uses: actions/checkout@v6
-    - run: semgrep ci
+      - name: Setup
+        uses: SierranaTech/actions/setup@main
+      - name: Semgrep scan
+        uses: SierranaTech/actions/semgrep@main
