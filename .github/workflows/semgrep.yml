@@ -1,26 +1,53 @@
+name: Semgrep
+
 on:
   workflow_dispatch: {}
   pull_request: {}
   push:
     branches:
-    - main
-    - master
+      - main
     paths:
-    - .github/workflows/semgrep.yml
+      - .github/workflows/semgrep.yml
   schedule:
-  # random HH:MM to avoid a load spike on GitHub Actions at 00:00
-  - cron: 58 4 * * *
-name: Semgrep
+    # random HH:MM within 06:00-09:00 UTC to spread runner load
+    - cron: '21 08 * * *'
+
 jobs:
   semgrep:
     name: semgrep/ci
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     env:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
-    container:
-      image: semgrep/semgrep
     steps:
-    - uses: actions/checkout@v6
-    - run: semgrep ci
+      # Inlined rather than SierranaTech/actions/{setup,semgrep}@main: this
+      # repo is public and SierranaTech/actions is private, and GitHub does
+      # not let a public repo consume actions/composites from a private repo
+      # in the same org, regardless of permissions. Keep in lockstep with
+      # SierranaTech/actions/semgrep/action.yml if that composite changes.
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+
+      - name: Ensure semgrep CLI
+        shell: bash
+        env:
+          SEMGREP_VERSION: "1.177.0"
+          UV_VERSION: "0.12.17"
+        run: |
+          set -euo pipefail
+          if command -v semgrep >/dev/null 2>&1; then
+            echo "Using runner-provided semgrep ($(semgrep --version))"
+          else
+            echo "semgrep not found on PATH; installing ${SEMGREP_VERSION} via mise"
+            mise use -g "uv@${UV_VERSION}"
+            mise use -g "pipx:semgrep@${SEMGREP_VERSION}"
+          fi
+
+      - name: Run semgrep ci
+        shell: bash
+        run: semgrep ci
