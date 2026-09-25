@@ -111,6 +111,38 @@ func TestInitNoDSNReturnsUsableFlush(t *testing.T) {
 	flush() // must not panic
 }
 
+func TestInitEnablesTracingWhenSampleRateSet(t *testing.T) {
+	t.Setenv("SENTRY_DSN", "https://key@example.test/1")
+	t.Setenv("SENTRY_TRACES_SAMPLE_RATE", "0.5")
+	mock := &sentry.MockTransport{}
+	t.Cleanup(func() { sentry.CurrentHub().BindClient(nil) })
+
+	flush := initWith(Config{Service: "widget"}, mock)
+	defer flush()
+
+	opts := sentry.CurrentHub().Client().Options()
+	if !opts.EnableTracing {
+		t.Error("EnableTracing = false, want true when SENTRY_TRACES_SAMPLE_RATE > 0 — otherwise sentry-go silently ignores TracesSampleRate and samples nothing")
+	}
+	if opts.TracesSampleRate != 0.5 {
+		t.Errorf("TracesSampleRate = %v, want 0.5", opts.TracesSampleRate)
+	}
+}
+
+func TestInitDisablesTracingWhenSampleRateUnset(t *testing.T) {
+	t.Setenv("SENTRY_DSN", "https://key@example.test/1")
+	t.Setenv("SENTRY_TRACES_SAMPLE_RATE", "")
+	mock := &sentry.MockTransport{}
+	t.Cleanup(func() { sentry.CurrentHub().BindClient(nil) })
+
+	flush := initWith(Config{Service: "widget"}, mock)
+	defer flush()
+
+	if sentry.CurrentHub().Client().Options().EnableTracing {
+		t.Error("EnableTracing = true, want false when SENTRY_TRACES_SAMPLE_RATE is unset")
+	}
+}
+
 func TestInitSetsServiceTag(t *testing.T) {
 	t.Setenv("SENTRY_DSN", "https://key@example.test/1")
 	mock := &sentry.MockTransport{}

@@ -90,9 +90,13 @@ func initWith(cfg Config, transport sentry.Transport) func() {
 	// PII collection stays off: that is the SDK default, so it is not set
 	// explicitly (the SendDefaultPII option is deprecated in sentry-go).
 	opts := sentry.ClientOptions{
-		Dsn:              dsn,
-		Environment:      env,
-		Release:          release,
+		Dsn:         dsn,
+		Environment: env,
+		Release:     release,
+		// EnableTracing is sentry-go's separate master switch for performance
+		// tracing — without it, TracesSampleRate is silently ignored and no
+		// transaction is ever sampled, regardless of its value.
+		EnableTracing:    tracesRate > 0,
 		TracesSampleRate: tracesRate,
 		AttachStacktrace: true,
 		BeforeSend:       scrub.beforeSend,
