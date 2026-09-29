@@ -22,6 +22,24 @@ func Capture(ctx context.Context, msg string, err error, fields ...any) {
 	sentry.CaptureException(err)
 }
 
+// CaptureFingerprint behaves like Capture, but replaces Sentry's default
+// grouping — the call site's stack trace — with an explicit fingerprint.
+// Use it where one shared call site captures many distinct underlying
+// causes (a generic reconcile-error wrapper, for example): without a
+// fingerprint, every cause collapses into a single Sentry issue that can
+// never be resolved, since a different cause keeps reopening it.
+func CaptureFingerprint(ctx context.Context, msg string, err error, fingerprint []string, fields ...any) {
+	logFields(msg, err, fields...)
+	hub := sentry.GetHubFromContext(ctx)
+	if hub == nil {
+		hub = sentry.CurrentHub()
+	}
+	hub.WithScope(func(scope *sentry.Scope) {
+		scope.SetFingerprint(fingerprint)
+		hub.CaptureException(err)
+	})
+}
+
 // ServerError captures err and writes a 500 response with body
 // {"error": msg}. The caller still owns the return.
 func ServerError(w http.ResponseWriter, r *http.Request, msg string, err error, fields ...any) {
