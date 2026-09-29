@@ -63,6 +63,41 @@ func tagsFromFields(fields ...any) map[string]string {
 	return tags
 }
 
+// AddBreadcrumb records a breadcrumb on ctx's Sentry hub (or the current hub
+// when ctx carries none), so an error captured later in the same unit of
+// work shows the steps that led up to it, not just which one failed.
+func AddBreadcrumb(ctx context.Context, category, message string) {
+	hub := sentry.GetHubFromContext(ctx)
+	if hub == nil {
+		hub = sentry.CurrentHub()
+	}
+	hub.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: category,
+		Message:  message,
+		Level:    sentry.LevelInfo,
+	}, nil)
+}
+
+// ClearBreadcrumbs clears ctx's Sentry hub's breadcrumb trail (or the
+// current hub's when ctx carries none). Call it once at the start of a unit
+// of work that uses AddBreadcrumb (e.g. once per reconcile), so an error
+// captured at the end shows only this unit's own trail rather than
+// breadcrumbs left over from an earlier, unrelated one.
+//
+// Safe only when callers of AddBreadcrumb for that unit of work run
+// single-threaded against this hub — concurrent callers sharing one hub
+// would race and clear each other's breadcrumbs. If a caller ever needs
+// concurrent isolation, give each unit of work its own cloned hub via
+// sentry.SetHubOnContext(ctx, sentry.CurrentHub().Clone()) instead of
+// relying on this.
+func ClearBreadcrumbs(ctx context.Context) {
+	hub := sentry.GetHubFromContext(ctx)
+	if hub == nil {
+		hub = sentry.CurrentHub()
+	}
+	hub.Scope().ClearBreadcrumbs()
+}
+
 // ServerError captures err and writes a 500 response with body
 // {"error": msg}. The caller still owns the return.
 func ServerError(w http.ResponseWriter, r *http.Request, msg string, err error, fields ...any) {

@@ -271,6 +271,68 @@ func TestCaptureFingerprintFallsBackToCurrentHub(t *testing.T) {
 	}
 }
 
+func TestAddBreadcrumbAppearsOnLaterCapture(t *testing.T) {
+	mock := &sentry.MockTransport{}
+	client, err := sentry.NewClient(sentry.ClientOptions{
+		Dsn:       "https://key@example.test/1",
+		Transport: mock,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	hub := sentry.NewHub(client, sentry.NewScope())
+	ctx := sentry.SetHubOnContext(context.Background(), hub)
+
+	AddBreadcrumb(ctx, "reconcile", "resources reconciled")
+	AddBreadcrumb(ctx, "reconcile", "status updated")
+	Capture(ctx, "reconcile failed", errors.New("boom"))
+	hub.Flush(0)
+
+	events := mock.Events()
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+	if len(events[0].Breadcrumbs) != 2 {
+		t.Fatalf("got %d breadcrumbs, want 2", len(events[0].Breadcrumbs))
+	}
+	if got := events[0].Breadcrumbs[0].Message; got != "resources reconciled" {
+		t.Errorf("breadcrumb[0].Message = %q, want %q", got, "resources reconciled")
+	}
+	if got := events[0].Breadcrumbs[1].Message; got != "status updated" {
+		t.Errorf("breadcrumb[1].Message = %q, want %q", got, "status updated")
+	}
+}
+
+func TestClearBreadcrumbsDropsPriorTrail(t *testing.T) {
+	mock := &sentry.MockTransport{}
+	client, err := sentry.NewClient(sentry.ClientOptions{
+		Dsn:       "https://key@example.test/1",
+		Transport: mock,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	hub := sentry.NewHub(client, sentry.NewScope())
+	ctx := sentry.SetHubOnContext(context.Background(), hub)
+
+	AddBreadcrumb(ctx, "reconcile", "leftover from an earlier, unrelated reconcile")
+	ClearBreadcrumbs(ctx)
+	AddBreadcrumb(ctx, "reconcile", "this reconcile's own step")
+	Capture(ctx, "reconcile failed", errors.New("boom"))
+	hub.Flush(0)
+
+	events := mock.Events()
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+	if len(events[0].Breadcrumbs) != 1 {
+		t.Fatalf("got %d breadcrumbs, want 1 (ClearBreadcrumbs should have dropped the earlier one)", len(events[0].Breadcrumbs))
+	}
+	if got := events[0].Breadcrumbs[0].Message; got != "this reconcile's own step" {
+		t.Errorf("breadcrumb.Message = %q, want %q", got, "this reconcile's own step")
+	}
+}
+
 func TestServerErrorWritesJSON500(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/things/1", nil)
