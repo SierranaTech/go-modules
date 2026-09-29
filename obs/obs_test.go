@@ -187,6 +187,55 @@ func TestCaptureUsesContextHub(t *testing.T) {
 	}
 }
 
+func TestCaptureFingerprintSetsFingerprint(t *testing.T) {
+	mock := &sentry.MockTransport{}
+	client, err := sentry.NewClient(sentry.ClientOptions{
+		Dsn:       "https://key@example.test/1",
+		Transport: mock,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	hub := sentry.NewHub(client, sentry.NewScope())
+	ctx := sentry.SetHubOnContext(context.Background(), hub)
+
+	CaptureFingerprint(ctx, "reconcile failed", errors.New("conflict"), []string{"microservice", "Conflict"})
+	hub.Flush(0)
+
+	events := mock.Events()
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+	got := events[0].Fingerprint
+	want := []string{"microservice", "Conflict"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("fingerprint = %v, want %v", got, want)
+	}
+}
+
+func TestCaptureFingerprintFallsBackToCurrentHub(t *testing.T) {
+	// No hub on ctx: CaptureFingerprint must still set the fingerprint via
+	// the current hub rather than silently dropping it.
+	mock := &sentry.MockTransport{}
+	client, err := sentry.NewClient(sentry.ClientOptions{
+		Dsn:       "https://key@example.test/1",
+		Transport: mock,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	sentry.CurrentHub().BindClient(client)
+	t.Cleanup(func() { sentry.CurrentHub().BindClient(nil) })
+
+	CaptureFingerprint(context.Background(), "reconcile failed", errors.New("invalid"), []string{"microservice", "Invalid"})
+	sentry.Flush(0)
+
+	events := mock.Events()
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+}
+
 func TestServerErrorWritesJSON500(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/things/1", nil)
