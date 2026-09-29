@@ -14,7 +14,11 @@ permissions:
 jobs:
   test:
     name: ${{ matrix.module }}
-    runs-on: homelab-small
+    # go-modules is public (avoids auth friction for private Go module
+    # checkouts elsewhere), and no self-hosted runner group allows public
+    # repos, so a job here never gets dispatched. ubuntu-latest has no such
+    # restriction, and is free for public repos.
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write
