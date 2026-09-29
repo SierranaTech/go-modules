@@ -15,27 +15,40 @@ jobs:
   test:
     name: ${{ matrix.module }}
     # go-modules is public (avoids auth friction for private Go module
-    # checkouts elsewhere), and no self-hosted runner group allows public
-    # repos, so a job here never gets dispatched. ubuntu-latest has no such
-    # restriction, and is free for public repos.
+    # checkouts elsewhere). GitHub won't let a public repo resolve actions
+    # from a private repo in the same org, so this job can't use the shared
+    # SierranaTech/actions/setup + go-suite composites — steps are inlined
+    # below instead. The coverage badge / README-update feature those
+    # composites offer on main pushes is dropped here rather than
+    # reimplemented; reintroduce it inline if it's wanted later.
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - module: obs
     steps:
-      - name: Setup
-        uses: SierranaTech/actions/setup@main
-        with:
-          go: true
-          go-mod-directory: ${{ matrix.module }}
-      - name: Go suite
-        uses: SierranaTech/actions/go-suite@main
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+
+      - name: Check go mod tidy
+        working-directory: ${{ matrix.module }}
+        run: go mod tidy -diff
+
+      - name: Run go vet
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           working-directory: ${{ matrix.module }}
-          badge-prefix: ${{ matrix.module }}
-          run-report: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          install-mode: none
+
+      - name: Run tests
+        working-directory: ${{ matrix.module }}
+        run: go test ./... -count=1 -race -v --cover
