@@ -185,6 +185,38 @@ func TestCaptureUsesContextHub(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("got %d events on the context hub, want 1", len(events))
 	}
+	if got := events[0].Tags["widget_id"]; got != "42" {
+		t.Errorf("widget_id tag = %q, want %q", got, "42")
+	}
+	if got := events[0].Tags["attempt"]; got != "final" {
+		t.Errorf("attempt tag = %q, want %q", got, "final")
+	}
+}
+
+func TestCaptureFallsBackToCurrentHub(t *testing.T) {
+	// No hub on ctx: Capture must still reach the current hub rather than
+	// silently dropping the event.
+	mock := &sentry.MockTransport{}
+	client, err := sentry.NewClient(sentry.ClientOptions{
+		Dsn:       "https://key@example.test/1",
+		Transport: mock,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	sentry.CurrentHub().BindClient(client)
+	t.Cleanup(func() { sentry.CurrentHub().BindClient(nil) })
+
+	Capture(context.Background(), "widget lookup failed", errors.New("boom"), "widget_id", 7)
+	sentry.Flush(0)
+
+	events := mock.Events()
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+	if got := events[0].Tags["widget_id"]; got != "7" {
+		t.Errorf("widget_id tag = %q, want %q", got, "7")
+	}
 }
 
 func TestCaptureFingerprintSetsFingerprint(t *testing.T) {
@@ -199,7 +231,7 @@ func TestCaptureFingerprintSetsFingerprint(t *testing.T) {
 	hub := sentry.NewHub(client, sentry.NewScope())
 	ctx := sentry.SetHubOnContext(context.Background(), hub)
 
-	CaptureFingerprint(ctx, "reconcile failed", errors.New("conflict"), []string{"microservice", "Conflict"})
+	CaptureFingerprint(ctx, "reconcile failed", errors.New("conflict"), []string{"microservice", "Conflict"}, "namespace", "prod")
 	hub.Flush(0)
 
 	events := mock.Events()
@@ -210,6 +242,9 @@ func TestCaptureFingerprintSetsFingerprint(t *testing.T) {
 	want := []string{"microservice", "Conflict"}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("fingerprint = %v, want %v", got, want)
+	}
+	if got := events[0].Tags["namespace"]; got != "prod" {
+		t.Errorf("namespace tag = %q, want %q", got, "prod")
 	}
 }
 
@@ -257,6 +292,19 @@ func TestStrFormatsNonStringFields(t *testing.T) {
 	// str falls through to jsonString for values that are neither string
 	// nor error; logFields must not panic on them.
 	logFields("mixed fields", nil, "count", 3, "meta", map[string]int{"a": 1})
+}
+
+func TestTagsFromFields(t *testing.T) {
+	got := tagsFromFields("widget_id", 42, "attempt", "final", "err", errors.New("boom"), 7, "skipped: non-string key", "odd_key_no_value")
+	want := map[string]string{"widget_id": "42", "attempt": "final", "err": "boom"}
+	if len(got) != len(want) {
+		t.Fatalf("tagsFromFields() = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("tag %q = %q, want %q", k, got[k], v)
+		}
+	}
 }
 
 func TestRevisionSafeInTest(t *testing.T) {
