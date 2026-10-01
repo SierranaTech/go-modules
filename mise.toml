@@ -5,8 +5,8 @@ prek = "latest"
 
 [env]
 # Modules in this repo, space-separated. Add new submodule dirs here and every
-# task below picks them up. "." is the root module, added in a later phase.
-MODULES = "obs"
+# task below picks them up. "." is the root module.
+MODULES = ". obs"
 
 [tasks.tidy]
 description = "go mod tidy every module"
