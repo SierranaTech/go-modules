@@ -10,30 +10,32 @@ by discussion. Each one names the evidence it rests on.
 
 ## Status
 
-As of 2026-10-03. Nothing is merged or deployed.
+As of 2026-10-03, end of day.
 
-- capture fixes, one PR per repo, all open with CI green:
-  SierranaTech/homelab#883, stiwdiohouse-schema#29, stiwdiohouse-booking#34,
-  stiwdiohouse-payments#71, stiwdiohouse-community#25,
-  stiwdiohouse-gateway#40, stiwdiohouse-notifications#27,
-  stiwdiohouse-video#35.
-- silent-500 sweep, stacked on each service's capture PR: booking#35,
-  community#26, gateway#41, notifications#28, payments#72, video#36. 83
+- merged, with a green main build on every repo: the capture fixes
+  (stiwdiohouse-schema#29, stiwdiohouse-booking#34, stiwdiohouse-payments#71,
+  stiwdiohouse-community#25, stiwdiohouse-gateway#40,
+  stiwdiohouse-notifications#27, stiwdiohouse-video#35), the silent-500
+  sweeps (booking#35, community#26, gateway#41, notifications#28,
+  payments#72, video#36) and the ops doc correction (stiwdiohouse#80). 83
   sites moved to `obs.ServerError`; 7 left alone (already captured, or no
   error in scope).
-- ops doc correction: SierranaTech/stiwdiohouse#80.
+- open: SierranaTech/homelab#883 (CronJob `SENTRY_DSN`). Until it merges the
+  two cron monitors stay inactive: the jobs run with no Sentry client and
+  skip their check-ins.
 - Sentry alert rule: not created. The Sentry API returned 403 for alert
   writes with the token available. Tracked in SierranaTech/stiwdiohouse#81
   with the exact configuration.
 - follow-ups filed: go-modules#14 (`obs.Recoverer`, `obs.RunMonitored`, Go
   directive policy), stiwdiohouse#82 (browser SDK decision), stiwdiohouse#83
   (request ids, proxy errors, unrecovered goroutines).
-- not verified: whether deployed pods currently initialise Sentry at all, and
-  whether the four services without git in their builder report an empty
-  release. Production log reads were not available during this work; the
-  post-deploy checks below settle both.
-- worktrees from `origin/main` live under
-  `/var/home/simeon/git/worktrees/sentry/`, one per repo.
+- not verified: that the deployed pods initialise Sentry with a release
+  equal to the deployed commit. Production log reads were not available
+  during this work; the post-deploy checks below settle it.
+- rollout note: the first six merges overlapped on a saturated runner pool
+  and their main builds timed out at the container build. They were rebuilt
+  by the sweep merges, taken one at a time behind the `runner-capacity`
+  check.
 
 ## What the survey found
 
