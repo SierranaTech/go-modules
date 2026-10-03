@@ -10,14 +10,30 @@ by discussion. Each one names the evidence it rests on.
 
 ## Status
 
-- survey done: Sentry org `sierranatech` (region `de`), all ten stiwdiohouse
-  repos, `go-modules`, `homelab`, `microservice-operator`.
-- worktrees from `origin/main` under `/var/home/simeon/git/worktrees/sentry/`,
-  one per repo. Dirty checkouts (`stiwdiohouse`, `stiwdiohouse-community`,
-  `go-modules` phase-1 doc edit) were left alone.
-- code changes: in progress, one PR per repo (see Sequence).
-- Sentry alert rule: created via the Sentry API once the first service PR is
-  up, configuration recorded below.
+As of 2026-10-03. Nothing is merged or deployed.
+
+- capture fixes, one PR per repo, all open with CI green:
+  SierranaTech/homelab#883, stiwdiohouse-schema#29, stiwdiohouse-booking#34,
+  stiwdiohouse-payments#71, stiwdiohouse-community#25,
+  stiwdiohouse-gateway#40, stiwdiohouse-notifications#27,
+  stiwdiohouse-video#35.
+- silent-500 sweep, stacked on each service's capture PR: booking#35,
+  community#26, gateway#41, notifications#28, payments#72, video#36. 83
+  sites moved to `obs.ServerError`; 7 left alone (already captured, or no
+  error in scope).
+- ops doc correction: SierranaTech/stiwdiohouse#80.
+- Sentry alert rule: not created. The Sentry API returned 403 for alert
+  writes with the token available. Tracked in SierranaTech/stiwdiohouse#81
+  with the exact configuration.
+- follow-ups filed: go-modules#14 (`obs.Recoverer`, `obs.RunMonitored`, Go
+  directive policy), stiwdiohouse#82 (browser SDK decision), stiwdiohouse#83
+  (request ids, proxy errors, unrecovered goroutines).
+- not verified: whether deployed pods currently initialise Sentry at all, and
+  whether the four services without git in their builder report an empty
+  release. Production log reads were not available during this work; the
+  post-deploy checks below settle both.
+- worktrees from `origin/main` live under
+  `/var/home/simeon/git/worktrees/sentry/`, one per repo.
 
 ## What the survey found
 
@@ -148,8 +164,6 @@ has a week of real traffic. The legacy `stiwdiohouse` project is left out.
 - request-ID propagation and tagging. Only video runs `RequestID` and nobody
   tags it. Follow-up issue.
 - a non-email channel. Nothing beyond email is installed in the org.
-- the silent-500 sweep. Second PR per service, mechanical, verified by a grep
-  for bare `StatusInternalServerError` writes.
 
 ## Changes per repo
 
@@ -251,4 +265,5 @@ Per service, after the image rolls:
 6. follow-up issues: `obs.Recoverer` and `obs.RunMonitored` in `go-modules`;
    silent-500 sweep per service; browser SDK decision for web and admin;
    request-ID tagging; metric monitors after a week of traffic.
-7. second round: the silent-500 sweeps.
+7. second round: the silent-500 sweeps. Done as stacked PRs; retarget each
+   to `main` after its capture PR merges.
