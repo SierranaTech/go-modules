@@ -72,6 +72,10 @@ type Config struct {
 	// is only reachable over HTTPS (behind a TLS-terminating ingress or
 	// gateway), false only for plain-HTTP local development.
 	Secure bool
+	// Unauthenticated, when set, handles a request RequireAuth rejects for a
+	// missing or invalid session, e.g. to redirect a browser to LoginHandler.
+	// Nil writes a JSON 401.
+	Unauthenticated http.Handler
 	// OAuthBaseURL and APIBaseURL default to the real GitHub endpoints.
 	// Override both to point at a mock server for a deterministic test.
 	OAuthBaseURL string
@@ -234,7 +238,7 @@ func (a *Auth) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := r.Cookie(a.cfg.CookieName)
 		if err != nil || c.Value == "" {
-			writeJSONError(w, http.StatusUnauthorized, "authentication required")
+			a.unauthenticated(w, r, "authentication required")
 			return
 		}
 		session, err := a.sessions.findByToken(r.Context(), c.Value)
@@ -243,7 +247,7 @@ func (a *Auth) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 		if session == nil {
-			writeJSONError(w, http.StatusUnauthorized, "invalid session")
+			a.unauthenticated(w, r, "invalid session")
 			return
 		}
 		user, err := a.sessions.findUserByID(r.Context(), session.UserID)
@@ -253,6 +257,14 @@ func (a *Auth) RequireAuth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userCtxKey, user)))
 	})
+}
+
+func (a *Auth) unauthenticated(w http.ResponseWriter, r *http.Request, message string) {
+	if a.cfg.Unauthenticated != nil {
+		a.cfg.Unauthenticated.ServeHTTP(w, r)
+		return
+	}
+	writeJSONError(w, http.StatusUnauthorized, message)
 }
 
 // UserFromContext returns the User attached by RequireAuth.
