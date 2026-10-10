@@ -3,6 +3,7 @@ package obs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 
@@ -100,8 +101,16 @@ func ClearBreadcrumbs(ctx context.Context) {
 
 // ServerError captures err and writes a 500 response with body
 // {"error": msg}. The caller still owns the return.
+//
+// When the client has already disconnected, err is only logged: the
+// failure is almost always the cancelled request context itself, and
+// nobody is left to receive the response.
 func ServerError(w http.ResponseWriter, r *http.Request, msg string, err error, fields ...any) {
-	Capture(r.Context(), msg, err, fields...)
+	if errors.Is(r.Context().Err(), context.Canceled) {
+		logFields(msg+" (client disconnected)", err, fields...)
+	} else {
+		Capture(r.Context(), msg, err, fields...)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusInternalServerError)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
