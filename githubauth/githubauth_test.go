@@ -130,6 +130,11 @@ type authStack struct {
 
 func newAuthStack(t *testing.T, allowedLogins []string, ghUser mockGitHubUser) *authStack {
 	t.Helper()
+	return newAuthStackWith(t, ghUser, func(c *githubauth.Config) { c.AllowedLogins = allowedLogins })
+}
+
+func newAuthStackWith(t *testing.T, ghUser mockGitHubUser, configure func(*githubauth.Config)) *authStack {
+	t.Helper()
 	db := newTestDB(t)
 	gh := newMockGitHub(t, ghUser)
 
@@ -137,12 +142,13 @@ func newAuthStack(t *testing.T, allowedLogins []string, ghUser mockGitHubUser) *
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	auth, err := githubauth.New(db, githubauth.Config{
+	cfg := githubauth.Config{
 		ClientID: "test-client", ClientSecret: "test-secret",
 		RedirectURL: srv.URL + "/auth/callback", BaseURL: srv.URL,
-		AllowedLogins: allowedLogins,
-		OAuthBaseURL:  gh.URL, APIBaseURL: gh.URL,
-	})
+		OAuthBaseURL: gh.URL, APIBaseURL: gh.URL,
+	}
+	configure(&cfg)
+	auth, err := githubauth.New(db, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -256,6 +262,39 @@ func TestProtectedRouteRejectsNoCookie(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestUnauthenticatedHandlerReplacesDefault401(t *testing.T) {
+	s := newAuthStackWith(t, mockGitHubUser{ID: 1, Login: "octocat"}, func(c *githubauth.Config) {
+		c.Unauthenticated = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/auth/login", http.StatusFound)
+		})
+	})
+
+	cases := map[string]func(*http.Request){
+		"no cookie":      func(*http.Request) {},
+		"unknown cookie": func(r *http.Request) { r.AddCookie(&http.Cookie{Name: "session", Value: "not-a-real-token"}) },
+	}
+	for name, prepare := range cases {
+		t.Run(name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, s.srv.URL+"/protected", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepare(req)
+			resp, err := s.client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusFound {
+				t.Fatalf("status = %d, want 302 from the Unauthenticated handler", resp.StatusCode)
+			}
+			if loc := resp.Header.Get("Location"); loc != "/auth/login" {
+				t.Fatalf("Location = %q, want /auth/login", loc)
+			}
+		})
 	}
 }
 
