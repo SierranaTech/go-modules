@@ -3,8 +3,10 @@ package obs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/getsentry/sentry-go"
 )
@@ -347,6 +349,54 @@ func TestServerErrorWritesJSON500(t *testing.T) {
 	}
 	if body := rec.Body.String(); body != "{\"error\":\"could not load thing\"}\n" {
 		t.Errorf("body = %q", body)
+	}
+}
+
+func TestServerErrorSentryReporting(t *testing.T) {
+	cases := []struct {
+		name       string
+		ctx        func() (context.Context, context.CancelFunc)
+		wantEvents int
+	}{
+		{"live request is reported", func() (context.Context, context.CancelFunc) {
+			return context.WithCancel(context.Background())
+		}, 1},
+		{"client disconnect is not reported", func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx, cancel
+		}, 0},
+		{"request timeout is still reported", func() (context.Context, context.CancelFunc) {
+			return context.WithDeadline(context.Background(), time.Unix(0, 0))
+		}, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &sentry.MockTransport{}
+			client, err := sentry.NewClient(sentry.ClientOptions{
+				Dsn:       "https://key@example.test/1",
+				Transport: mock,
+			})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			hub := sentry.NewHub(client, sentry.NewScope())
+			ctx, cancel := tc.ctx()
+			defer cancel()
+			ctx = sentry.SetHubOnContext(ctx, hub)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("GET", "/videos/1/segment/0.ts", nil).WithContext(ctx)
+
+			ServerError(rec, req, "internal server error", fmt.Errorf("get video by id: %w", ctx.Err()))
+			hub.Flush(0)
+
+			if got := len(mock.Events()); got != tc.wantEvents {
+				t.Errorf("got %d Sentry events, want %d", got, tc.wantEvents)
+			}
+			if rec.Code != 500 {
+				t.Errorf("status = %d, want 500", rec.Code)
+			}
+		})
 	}
 }
 
