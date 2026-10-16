@@ -14,13 +14,8 @@ permissions:
 jobs:
   test:
     name: ${{ matrix.module }}
-    # go-modules is public (avoids auth friction for private Go module
-    # checkouts elsewhere). GitHub won't let a public repo resolve actions
-    # from a private repo in the same org, so this job can't use the shared
-    # SierranaTech/actions/setup + go-suite composites — steps are inlined
-    # below instead. The coverage badge / README-update feature those
-    # composites offer on main pushes is dropped here rather than
-    # reimplemented; reintroduce it inline if it's wanted later.
+    # A public repo can't resolve actions from a private repo, so the
+    # setup and test steps are inlined.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
