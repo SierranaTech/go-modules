@@ -4,8 +4,8 @@ Shared Go code for SierranaTech services: the wiring that every `ci` + `ecr`
 Go service was copying by hand. One repo, one module per third-party dependency
 footprint.
 
-See `CONTEXT.md` for the vocabulary, `docs/adr/` for the packaging decisions,
-and `docs/PLAN-phase-1-obs.md` for what is being rolled out now.
+See `CONTEXT.md` for the vocabulary and `docs/adr/` for the packaging
+decisions.
 
 ## Modules
 
@@ -44,9 +44,6 @@ a `replace`:
 replace github.com/SierranaTech/go-modules/obs => ../go-modules/obs
 replace github.com/SierranaTech/go-modules => ../go-modules
 ```
-
-CI fetches this repo through the org's private-module App; add `go-modules` to
-the `repositories` input of the `private-modules-token` step.
 
 ## Development
 

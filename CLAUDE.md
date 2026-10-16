@@ -1,7 +1,7 @@
 # go-modules
 
 Shared Go modules for SierranaTech services. Read `CONTEXT.md` for vocabulary,
-`docs/adr/` for decisions, `docs/PLAN-phase-1-obs.md` for the current plan.
+`docs/adr/` for decisions.
 
 ## Layout
 
