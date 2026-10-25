@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -112,30 +113,36 @@ type fakeIssuer struct {
 	clientSecret string
 	now          func() time.Time
 
-	mu          sync.Mutex
-	user        map[string]any
-	lastNonce   string
-	down        bool
-	authError   string
-	idTokenEdit func(map[string]any)
+	mu            sync.Mutex
+	user          map[string]any
+	lastNonce     string
+	down          bool
+	tokenEndpoint string
+	authError     string
+	idTokenEdit   func(map[string]any)
 }
 
 func newFakeIssuer(t *testing.T, user map[string]any, now func() time.Time) *fakeIssuer {
 	t.Helper()
-	f := &fakeIssuer{clientID: "test-client", clientSecret: "test-secret", user: user, now: now}
+	// The secret carries reserved characters so the RFC 6749 2.3.1 form
+	// encoding of the Basic header is exercised, not just assumed.
+	f := &fakeIssuer{clientID: "test-client", clientSecret: "s3cr3t+with/reserved=chars%", user: user, now: now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
-		down := f.down
+		down, tokenEndpoint := f.down, f.tokenEndpoint
 		f.mu.Unlock()
 		if down {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		if tokenEndpoint == "" {
+			tokenEndpoint = f.srv.URL + "/token"
+		}
 		writeJSON(w, map[string]string{
 			"issuer":                 f.srv.URL,
 			"authorization_endpoint": f.srv.URL + "/authorize",
-			"token_endpoint":         f.srv.URL + "/token",
+			"token_endpoint":         tokenEndpoint,
 			"userinfo_endpoint":      f.srv.URL + "/userinfo",
 		})
 	})
@@ -161,7 +168,9 @@ func newFakeIssuer(t *testing.T, user map[string]any, now func() time.Time) *fak
 		http.Redirect(w, r, back.String(), http.StatusFound)
 	})
 	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
-		id, secret, ok := r.BasicAuth()
+		rawID, rawSecret, ok := r.BasicAuth()
+		id, _ := url.QueryUnescape(rawID)
+		secret, _ := url.QueryUnescape(rawSecret)
 		if !ok || id != f.clientID || secret != f.clientSecret {
 			w.WriteHeader(http.StatusUnauthorized)
 			writeJSON(w, map[string]string{"error": "invalid_client"})
@@ -236,6 +245,7 @@ func defaultUser() map[string]any {
 // behind a jar-carrying http.Client so cookies flow between requests exactly
 // as they would in a browser.
 type stack struct {
+	auth   *oidcauth.Auth
 	db     *sql.DB
 	clock  *clock
 	issuer *fakeIssuer
@@ -291,7 +301,7 @@ func newStack(t *testing.T, user map[string]any, mod func(*oidcauth.Config)) *st
 		t.Fatal(err)
 	}
 	return &stack{
-		db: db, clock: clk, issuer: issuer, srv: srv,
+		auth: auth, db: db, clock: clk, issuer: issuer, srv: srv,
 		client: &http.Client{Jar: jar},
 		noRedirect: &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -447,6 +457,25 @@ func TestInvalidIDTokenRejected(t *testing.T) {
 	}
 }
 
+func TestAuthenticateDistinguishesNoSessionFromAUser(t *testing.T) {
+	s := newStack(t, defaultUser(), nil)
+
+	anon, _ := http.NewRequest(http.MethodGet, s.srv.URL+"/", nil)
+	if _, err := s.auth.Authenticate(anon); !errors.Is(err, oidcauth.ErrUnauthenticated) {
+		t.Fatalf("Authenticate without cookie: err = %v, want ErrUnauthenticated", err)
+	}
+
+	s.login(t)
+	signedIn, _ := http.NewRequest(http.MethodGet, s.srv.URL+"/", nil)
+	for _, c := range s.client.Jar.Cookies(signedIn.URL) {
+		signedIn.AddCookie(c)
+	}
+	user, err := s.auth.Authenticate(signedIn)
+	if err != nil || user.Username != "alice" {
+		t.Fatalf("Authenticate with session: user = %+v, err = %v", user, err)
+	}
+}
+
 func TestProtectedRouteRejectsNoCookie(t *testing.T) {
 	s := newStack(t, defaultUser(), nil)
 	resp, body := s.get(t, "/protected")
@@ -516,6 +545,44 @@ func TestDiscoveryRetriedAfterIssuerOutage(t *testing.T) {
 	s.issuer.set(func(f *fakeIssuer) { f.down = false })
 	if resp, body := s.login(t); resp.StatusCode != http.StatusOK || body != "home" {
 		t.Fatalf("login after recovery = %d %q, want 200 home", resp.StatusCode, body)
+	}
+}
+
+func TestPlainHTTPEndpointInDiscoveryRejected(t *testing.T) {
+	s := newStack(t, defaultUser(), nil)
+	s.issuer.set(func(f *fakeIssuer) { f.tokenEndpoint = "http://auth.example.com/token" })
+	if resp, _ := s.login(t); resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("login with a plain-http token endpoint = %d, want 500", resp.StatusCode)
+	}
+	if n := s.sessionCount(t); n != 0 {
+		t.Fatalf("sessions = %d, want 0", n)
+	}
+}
+
+func TestCallbackWithoutCodeRejected(t *testing.T) {
+	s := newStack(t, defaultUser(), nil)
+	resp, err := s.noRedirect.Get(s.srv.URL + "/auth/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, _ = s.get(t, "/auth/callback?state="+url.QueryEscape(loc.Query().Get("state")))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("callback without code = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestCreateSweepsTheUsersExpiredSessions(t *testing.T) {
+	s := newStack(t, defaultUser(), nil)
+	s.login(t)
+	s.clock.Advance(8 * 24 * time.Hour)
+	s.login(t)
+	if n := s.sessionCount(t); n != 1 {
+		t.Fatalf("sessions after re-login past expiry = %d, want 1", n)
 	}
 }
 

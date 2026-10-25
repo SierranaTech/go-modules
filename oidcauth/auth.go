@@ -32,7 +32,9 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -59,7 +61,9 @@ type Config struct {
 	// and the ID token's iss claim must equal it. It must be https, except a
 	// loopback address for tests.
 	IssuerURL string
-	// ClientID and ClientSecret identify this app's client at the issuer.
+	// ClientID and ClientSecret identify this app's client at the issuer. The
+	// secret is sent with client_secret_basic, form-encoded per RFC 6749
+	// 2.3.1; an alphanumeric secret avoids any disagreement over that.
 	ClientID     string
 	ClientSecret string
 	// RedirectURL is the client's registered callback URL, e.g.
@@ -120,8 +124,8 @@ func New(db *sql.DB, cfg Config) (*Auth, error) {
 		return nil, fmt.Errorf("oidcauth: missing required config: %v", missing)
 	}
 	cfg.IssuerURL = strings.TrimSuffix(cfg.IssuerURL, "/")
-	if err := checkIssuerURL(cfg.IssuerURL); err != nil {
-		return nil, err
+	if err := checkHTTPSURL(cfg.IssuerURL); err != nil {
+		return nil, fmt.Errorf("oidcauth: IssuerURL: %w", err)
 	}
 	if cfg.CookieName == "" {
 		cfg.CookieName = "session"
@@ -147,13 +151,14 @@ func New(db *sql.DB, cfg Config) (*Auth, error) {
 	}, nil
 }
 
-// checkIssuerURL enforces https for the issuer. TLS to the issuer is this
-// package's trust anchor (ADR 0003), so a plain-http issuer would mean
-// trusting an unauthenticated network path. Loopback is allowed for tests.
-func checkIssuerURL(raw string) error {
+// checkHTTPSURL enforces https for the issuer and every endpoint it
+// advertises. TLS to the issuer is this package's trust anchor (ADR 0003), so
+// a plain-http URL would mean trusting an unauthenticated network path.
+// Loopback is allowed for tests.
+func checkHTTPSURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
-		return fmt.Errorf("oidcauth: IssuerURL %q is not an absolute URL", raw)
+		return fmt.Errorf("%q is not an absolute URL", raw)
 	}
 	switch u.Scheme {
 	case "https":
@@ -164,7 +169,7 @@ func checkIssuerURL(raw string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("oidcauth: IssuerURL %q must be https (http is allowed for loopback only)", raw)
+	return fmt.Errorf("%q must be https (http is allowed for loopback only)", raw)
 }
 
 // LoginHandler starts the sign-in: generates state, nonce and PKCE, stashes
@@ -207,14 +212,11 @@ func (a *Auth) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	stateCookie, stateErr := r.Cookie(flowStateCookie)
 	nonceCookie, nonceErr := r.Cookie(flowNonceCookie)
 	verifierCookie, verifierErr := r.Cookie(flowVerifierCookie)
-	// Clear immediately: single-use, defence in depth.
-	a.clearCookie(w, flowStateCookie)
-	a.clearCookie(w, flowNonceCookie)
-	a.clearCookie(w, flowVerifierCookie)
 
 	// The issuer reports a refused sign-in (e.g. a user outside the client's
 	// authorization policy) as an error redirect rather than a code.
 	if e := q.Get("error"); e != "" {
+		a.clearFlowCookies(w)
 		if e == "access_denied" {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
@@ -223,10 +225,14 @@ func (a *Auth) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if stateErr != nil || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(stateCookie.Value)) != 1 ||
-		nonceErr != nil || verifierErr != nil {
+		nonceErr != nil || verifierErr != nil || q.Get("code") == "" {
 		http.Error(w, "invalid sign-in state", http.StatusBadRequest)
 		return
 	}
+	// Cleared only once the state matched: a stray cross-site request to the
+	// callback must not be able to abort someone else's sign-in. Single-use
+	// from here on, defence in depth.
+	a.clearFlowCookies(w)
 
 	tokens, err := a.provider.exchangeCode(r.Context(), q.Get("code"), verifierCookie.Value)
 	if err != nil {
@@ -299,25 +305,38 @@ type ctxKey int
 
 const userCtxKey ctxKey = iota
 
+// ErrUnauthenticated is returned by Authenticate for a request with no
+// session cookie, or a cookie naming a session that is missing or expired.
+var ErrUnauthenticated = errors.New("oidcauth: not authenticated")
+
+// Authenticate resolves the request's session cookie to its User. It returns
+// ErrUnauthenticated when there is no valid session and any other error for a
+// database failure. RequireAuth is built on it; a consumer on a router with
+// its own middleware shape (gin, chi) calls it directly.
+func (a *Auth) Authenticate(r *http.Request) (*User, error) {
+	c, err := r.Cookie(a.cfg.CookieName)
+	if err != nil || c.Value == "" {
+		return nil, ErrUnauthenticated
+	}
+	session, err := a.sessions.findByToken(r.Context(), c.Value)
+	if err != nil {
+		return nil, err
+	}
+	if session == nil {
+		return nil, ErrUnauthenticated
+	}
+	return a.sessions.findUserByID(r.Context(), session.UserID)
+}
+
 // RequireAuth rejects a request with no valid session, and otherwise attaches
 // the signed-in User to the request context for UserFromContext.
 func (a *Auth) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(a.cfg.CookieName)
-		if err != nil || c.Value == "" {
-			a.unauthenticated(w, r, "authentication required")
+		user, err := a.Authenticate(r)
+		if errors.Is(err, ErrUnauthenticated) {
+			a.unauthenticated(w, r)
 			return
 		}
-		session, err := a.sessions.findByToken(r.Context(), c.Value)
-		if err != nil {
-			a.internalError(w, err)
-			return
-		}
-		if session == nil {
-			a.unauthenticated(w, r, "invalid session")
-			return
-		}
-		user, err := a.sessions.findUserByID(r.Context(), session.UserID)
 		if err != nil {
 			a.internalError(w, err)
 			return
@@ -326,12 +345,12 @@ func (a *Auth) RequireAuth(next http.Handler) http.Handler {
 	})
 }
 
-func (a *Auth) unauthenticated(w http.ResponseWriter, r *http.Request, message string) {
+func (a *Auth) unauthenticated(w http.ResponseWriter, r *http.Request) {
 	if a.cfg.Unauthenticated != nil {
 		a.cfg.Unauthenticated.ServeHTTP(w, r)
 		return
 	}
-	writeJSONError(w, http.StatusUnauthorized, message)
+	writeJSONError(w, http.StatusUnauthorized, "authentication required")
 }
 
 // UserFromContext returns the User attached by RequireAuth.
@@ -347,6 +366,12 @@ func (a *Auth) setCookie(w http.ResponseWriter, name, value string, ttl time.Dur
 	})
 }
 
+func (a *Auth) clearFlowCookies(w http.ResponseWriter) {
+	a.clearCookie(w, flowStateCookie)
+	a.clearCookie(w, flowNonceCookie)
+	a.clearCookie(w, flowVerifierCookie)
+}
+
 func (a *Auth) clearCookie(w http.ResponseWriter, name string) {
 	http.SetCookie(w, &http.Cookie{
 		Name: name, Value: "", Path: "/", MaxAge: -1,
@@ -354,10 +379,11 @@ func (a *Auth) clearCookie(w http.ResponseWriter, name string) {
 	})
 }
 
-// internalError responds generically. This package has no logging dependency
-// by design (it stays stdlib-only); the consumer's own request-logging
-// middleware sees the resulting 500 and status code regardless.
-func (a *Auth) internalError(w http.ResponseWriter, _ error) {
+// internalError responds generically and logs the cause through the default
+// slog logger, so an operator can tell a discovery, token, userinfo or
+// database failure apart without the error reaching the browser.
+func (a *Auth) internalError(w http.ResponseWriter, err error) {
+	slog.Error("oidcauth: sign-in failed", "err", err)
 	writeJSONError(w, http.StatusInternalServerError, "internal error")
 }
 

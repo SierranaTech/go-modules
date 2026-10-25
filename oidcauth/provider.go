@@ -41,11 +41,25 @@ type discovery struct {
 
 func (p *provider) discover(ctx context.Context) (*discovery, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.disc != nil {
-		return p.disc, nil
+	cached := p.disc
+	p.mu.Unlock()
+	if cached != nil {
+		return cached, nil
 	}
 
+	// The fetch runs outside the lock so concurrent first logins do not queue
+	// behind one slow or failing issuer; a duplicate fetch is harmless.
+	d, err := p.fetchDiscovery(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	p.disc = d
+	p.mu.Unlock()
+	return d, nil
+}
+
+func (p *provider) fetchDiscovery(ctx context.Context) (*discovery, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.issuer+"/.well-known/openid-configuration", nil)
 	if err != nil {
 		return nil, fmt.Errorf("oidcauth: build discovery request: %w", err)
@@ -62,11 +76,21 @@ func (p *provider) discover(ctx context.Context) (*discovery, error) {
 	if strings.TrimSuffix(d.Issuer, "/") != p.issuer {
 		return nil, fmt.Errorf("oidcauth: discovery issuer %q does not match configured %q", d.Issuer, p.issuer)
 	}
-	if d.AuthorizationEndpoint == "" || d.TokenEndpoint == "" || d.UserinfoEndpoint == "" {
-		return nil, fmt.Errorf("oidcauth: discovery is missing an endpoint")
+	// The endpoints carry the client secret, the ID token and the claims, so
+	// they must meet the same https rule as the issuer (ADR 0003).
+	for name, endpoint := range map[string]string{
+		"authorization_endpoint": d.AuthorizationEndpoint,
+		"token_endpoint":         d.TokenEndpoint,
+		"userinfo_endpoint":      d.UserinfoEndpoint,
+	} {
+		if endpoint == "" {
+			return nil, fmt.Errorf("oidcauth: discovery is missing %s", name)
+		}
+		if err := checkHTTPSURL(endpoint); err != nil {
+			return nil, fmt.Errorf("oidcauth: discovery %s: %w", name, err)
+		}
 	}
-	p.disc = &d
-	return p.disc, nil
+	return &d, nil
 }
 
 func (p *provider) authURL(ctx context.Context, state, nonce, codeChallenge string) (string, error) {
@@ -100,7 +124,9 @@ type tokenResponse struct {
 
 // exchangeCode redeems the authorization code at the token endpoint,
 // authenticating with client_secret_basic. Per RFC 6749 2.3.1 the credentials
-// are form-encoded before going into the Basic header.
+// are form-encoded before going into the Basic header, as golang.org/x/oauth2
+// also does; a provider that compares the header literally only matches a
+// secret with no reserved characters.
 func (p *provider) exchangeCode(ctx context.Context, code, codeVerifier string) (*tokenResponse, error) {
 	d, err := p.discover(ctx)
 	if err != nil {

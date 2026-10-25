@@ -106,10 +106,17 @@ func (s *sessionStore) upsertUser(ctx context.Context, c *claims) (*User, error)
 	return u, nil
 }
 
+// create inserts the session and sweeps the user's expired ones, so a browser
+// that never returns does not leave its row behind forever.
 func (s *sessionStore) create(ctx context.Context, userID int64, token string, ttl time.Duration) error {
+	now := s.now()
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM sessions WHERE user_id = $1 AND expires_at < $2`, userID, now); err != nil {
+		return fmt.Errorf("oidcauth: sweep expired sessions: %w", err)
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO sessions (user_id, token, expires_at) VALUES ($1, $2, $3)`,
-		userID, token, s.now().Add(ttl))
+		userID, token, now.Add(ttl))
 	if err != nil {
 		return fmt.Errorf("oidcauth: create session: %w", err)
 	}
