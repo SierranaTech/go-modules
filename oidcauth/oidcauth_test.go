@@ -586,31 +586,93 @@ func TestCreateSweepsTheUsersExpiredSessions(t *testing.T) {
 	}
 }
 
+// An app with its own users and sessions gets the identity and nothing else:
+// no database, no oidcauth cookie, the app writes the response.
+func TestOnSignInReceivesTheIdentityWithoutADatabase(t *testing.T) {
+	clk := &clock{t: time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)}
+	user := defaultUser()
+	user["email_verified"] = true
+	issuer := newFakeIssuer(t, user, clk.Now)
+
+	var got *oidcauth.Identity
+	var auth *oidcauth.Auth
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth/login", func(w http.ResponseWriter, r *http.Request) { auth.LoginHandler(w, r) })
+	mux.HandleFunc("GET /auth/callback", func(w http.ResponseWriter, r *http.Request) { auth.CallbackHandler(w, r) })
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	var err error
+	auth, err = oidcauth.New(nil, oidcauth.Config{
+		IssuerURL: issuer.srv.URL, ClientID: issuer.clientID, ClientSecret: issuer.clientSecret,
+		RedirectURL: srv.URL + "/auth/callback", BaseURL: srv.URL, AllowedGroups: []string{"app-users"}, Now: clk.Now,
+		OnSignIn: func(w http.ResponseWriter, r *http.Request, id *oidcauth.Identity) {
+			got = id
+			w.WriteHeader(http.StatusTeapot)
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+	resp, err := client.Get(srv.URL + "/auth/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusTeapot {
+		t.Fatalf("login landed on %d, want the OnSignIn response", resp.StatusCode)
+	}
+	if got == nil || got.Subject != "user-1" || got.Username != "alice" || !got.EmailVerified ||
+		strings.Join(got.Groups, ",") != "app-users,other" {
+		t.Fatalf("identity = %+v", got)
+	}
+	for _, c := range jar.Cookies(resp.Request.URL) {
+		if c.Name == "session" {
+			t.Fatal("oidcauth set its own session cookie despite OnSignIn")
+		}
+	}
+}
+
 func TestNewValidatesConfig(t *testing.T) {
 	valid := oidcauth.Config{
 		IssuerURL: "https://auth.example.com", ClientID: "c", ClientSecret: "s",
 		RedirectURL: "https://app.example.com/auth/callback", BaseURL: "https://app.example.com",
 	}
-	if _, err := oidcauth.New(nil, valid); err != nil {
+	// A closed handle is enough: New never touches the database.
+	db, _ := sql.Open("pgx", "postgres://unused")
+	_ = db.Close()
+	if _, err := oidcauth.New(db, valid); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
+	}
+	if _, err := oidcauth.New(nil, valid); err == nil || !strings.Contains(err.Error(), "OnSignIn") {
+		t.Fatalf("nil db without OnSignIn: err = %v, want a db requirement", err)
 	}
 
 	loopback := valid
 	loopback.IssuerURL = "http://127.0.0.1:9999"
-	if _, err := oidcauth.New(nil, loopback); err != nil {
+	if _, err := oidcauth.New(db, loopback); err != nil {
 		t.Fatalf("loopback http issuer rejected: %v", err)
 	}
 
 	plain := valid
 	plain.IssuerURL = "http://auth.example.com"
-	if _, err := oidcauth.New(nil, plain); err == nil || !strings.Contains(err.Error(), "https") {
+	if _, err := oidcauth.New(db, plain); err == nil || !strings.Contains(err.Error(), "https") {
 		t.Fatalf("plain http issuer: err = %v, want https requirement", err)
+	}
+
+	withHook := valid
+	withHook.OnSignIn = func(http.ResponseWriter, *http.Request, *oidcauth.Identity) {}
+	if _, err := oidcauth.New(nil, withHook); err != nil {
+		t.Fatalf("nil db with OnSignIn rejected: %v", err)
 	}
 
 	missing := valid
 	missing.ClientSecret = ""
 	missing.BaseURL = ""
-	_, err := oidcauth.New(nil, missing)
+	_, err := oidcauth.New(db, missing)
 	if err == nil || !strings.Contains(err.Error(), "ClientSecret") || !strings.Contains(err.Error(), "BaseURL") {
 		t.Fatalf("missing fields: err = %v", err)
 	}

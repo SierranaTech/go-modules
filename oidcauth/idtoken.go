@@ -22,8 +22,28 @@ type claims struct {
 	PreferredUsername string   `json:"preferred_username"`
 	Name              string   `json:"name"`
 	Email             string   `json:"email"`
+	EmailVerified     bool     `json:"email_verified"`
 	Picture           string   `json:"picture"`
 	Groups            []string `json:"groups"`
+}
+
+// Identity is what the issuer asserts about the signed-in person, as read
+// from the userinfo endpoint. Groups is nil when the issuer sent none.
+type Identity struct {
+	Subject       string   `json:"subject"`
+	Username      string   `json:"username"`
+	Name          string   `json:"name"`
+	Email         string   `json:"email"`
+	EmailVerified bool     `json:"email_verified"`
+	AvatarURL     string   `json:"avatar_url"`
+	Groups        []string `json:"groups"`
+}
+
+func (c *claims) identity() *Identity {
+	return &Identity{
+		Subject: c.Subject, Username: c.PreferredUsername, Name: c.Name,
+		Email: c.Email, EmailVerified: c.EmailVerified, AvatarURL: c.Picture, Groups: c.Groups,
+	}
 }
 
 // audience accepts the aud claim as either a single string or an array, both

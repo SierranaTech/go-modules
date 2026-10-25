@@ -21,6 +21,19 @@
 // Sessions and users persist in the *sql.DB passed to New; see Schema for the
 // two required tables, added to the consumer's own migrations.
 //
+// An app with its own users and sessions sets Config.OnSignIn instead and
+// passes a nil db. The package then runs the sign-in flow only and hands the
+// verified Identity to the app, which links it to its own user and issues its
+// own session:
+//
+//	auth, err := oidcauth.New(nil, oidcauth.Config{
+//		// ...issuer and client settings as above...
+//		OnSignIn: func(w http.ResponseWriter, r *http.Request, id *oidcauth.Identity) {
+//			// look up or link the app's user by id.Subject or id.Email,
+//			// start the app's session, redirect
+//		},
+//	})
+//
 // The package is a confidential client using the authorization code flow with
 // PKCE and a nonce. It reads the user's claims from the userinfo endpoint and
 // trusts TLS to the issuer rather than verifying the ID token's signature; see
@@ -94,6 +107,12 @@ type Config struct {
 	// missing or invalid session, e.g. to redirect a browser to LoginHandler.
 	// Nil writes a JSON 401.
 	Unauthenticated http.Handler
+	// OnSignIn, when set, receives the verified identity at the end of
+	// CallbackHandler, after the AllowedGroups check, and must write the
+	// response. No user row, session or cookie is created and db may be nil;
+	// RequireAuth, MeHandler and LogoutHandler are then not available. For an
+	// app that keeps its own users and sessions.
+	OnSignIn func(w http.ResponseWriter, r *http.Request, id *Identity)
 	// Now returns the current time. Defaults to time.Now; a test injects a
 	// clock to drive session and ID token expiry.
 	Now func() time.Time
@@ -122,6 +141,9 @@ func New(db *sql.DB, cfg Config) (*Auth, error) {
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("oidcauth: missing required config: %v", missing)
+	}
+	if db == nil && cfg.OnSignIn == nil {
+		return nil, errors.New("oidcauth: db is required unless OnSignIn is set")
 	}
 	cfg.IssuerURL = strings.TrimSuffix(cfg.IssuerURL, "/")
 	if err := checkHTTPSURL(cfg.IssuerURL); err != nil {
@@ -203,9 +225,10 @@ func (a *Auth) LoginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // CallbackHandler completes the sign-in: verifies state, exchanges the code,
-// validates the ID token, fetches userinfo, enforces AllowedGroups, and
-// creates a session. A user outside AllowedGroups is rejected here; no
-// session is ever created for them.
+// validates the ID token, fetches userinfo, enforces AllowedGroups, and then
+// either creates a session or, with Config.OnSignIn set, hands the identity to
+// the app. A user outside AllowedGroups is rejected here; no session is ever
+// created for them.
 func (a *Auth) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
@@ -261,7 +284,12 @@ func (a *Auth) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := a.sessions.upsertUser(r.Context(), info)
+	if a.cfg.OnSignIn != nil {
+		a.cfg.OnSignIn(w, r, info.identity())
+		return
+	}
+
+	user, err := a.sessions.upsertUser(r.Context(), info.identity())
 	if err != nil {
 		a.internalError(w, err)
 		return

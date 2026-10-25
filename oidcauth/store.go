@@ -49,9 +49,9 @@ type User struct {
 }
 
 // Session is a signed-in session, keyed by an opaque bearer token held in a
-// cookie.
+// cookie. The sessions table's own primary key is not read, so a consumer
+// with an existing sessions table keyed differently can keep it.
 type Session struct {
-	ID        int64
 	UserID    int64
 	Token     string
 	ExpiresAt time.Time
@@ -77,8 +77,8 @@ func scanUser(row *sql.Row) (*User, error) {
 	return &u, nil
 }
 
-func (s *sessionStore) upsertUser(ctx context.Context, c *claims) (*User, error) {
-	groups := c.Groups
+func (s *sessionStore) upsertUser(ctx context.Context, id *Identity) (*User, error) {
+	groups := id.Groups
 	if groups == nil {
 		groups = []string{}
 	}
@@ -98,7 +98,7 @@ func (s *sessionStore) upsertUser(ctx context.Context, c *claims) (*User, error)
 			avatar_url = EXCLUDED.avatar_url,
 			groups = EXCLUDED.groups
 		RETURNING `+userColumns,
-		c.Subject, c.PreferredUsername, c.Name, c.Email, c.Picture, string(groupsJSON),
+		id.Subject, id.Username, id.Name, id.Email, id.AvatarURL, string(groupsJSON),
 	))
 	if err != nil {
 		return nil, fmt.Errorf("oidcauth: upsert user: %w", err)
@@ -129,9 +129,9 @@ func (s *sessionStore) create(ctx context.Context, userID int64, token string, t
 func (s *sessionStore) findByToken(ctx context.Context, token string) (*Session, error) {
 	var sess Session
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, token, expires_at, created_at FROM sessions WHERE token = $1`,
+		`SELECT user_id, token, expires_at, created_at FROM sessions WHERE token = $1`,
 		token,
-	).Scan(&sess.ID, &sess.UserID, &sess.Token, &sess.ExpiresAt, &sess.CreatedAt)
+	).Scan(&sess.UserID, &sess.Token, &sess.ExpiresAt, &sess.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
