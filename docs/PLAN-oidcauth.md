@@ -3,8 +3,13 @@
 Implements go-modules#21. homelab ADR 0007 decided that in-house apps sign in
 through Authelia over OpenID Connect and that go-modules gains a generic
 OpenID Connect package next to `githubauth`, with the same shape. This plan
-covers the package, its release, and the first consumer swap: vocatio-frontend.
-vidistet (#47), faucepan (#40) and copywrite (#77) follow in their own PRs.
+covers the package, its release, and three consumer swaps: vocatio-frontend,
+vidistet (#47) and copywrite (#77). faucepan (#40) follows in its own PR.
+
+The aim behind the three is one sign-in flow for every personal project.
+vocatio-frontend takes the package whole. vidistet and copywrite keep their
+own users and sessions and take the sign-in flow only; see "Identity-only
+mode" below.
 
 Written 2026-10-25 after a grill-with-docs session. The decisions below that
 were open were put to the owner and settled; the rest come from ADR 0007, the
@@ -32,6 +37,15 @@ live Authelia discovery document and the consumer's code.
   `end_session_endpoint` (checked 2026-10-25), so there is nothing to call.
 - time is injected through `Config.Now`, so session expiry and ID token `exp`
   are testable without sleeping.
+- `Config.OnSignIn` is the identity-only mode. When set, the callback hands
+  the verified `Identity` (subject, username, name, email, email_verified,
+  picture, groups) to the app after the `AllowedGroups` check and does nothing
+  else; `db` may be nil. An app that keeps its own users and sessions uses
+  this; it is why vidistet's and copywrite's swaps stay small.
+- `Authenticate(r)` sits under `RequireAuth`, so an app on gin or chi writes
+  its own middleware in a few lines.
+- the sessions table's primary key is not read. An app with an existing
+  sessions table keyed by UUID keeps it.
 
 ## Ponytail pass
 
@@ -171,6 +185,43 @@ Merge, then `git tag v0.3.0 && git push origin v0.3.0`. The root module is
 `v0`, so a new package is a minor bump. Deprecating `githubauth` is a doc
 comment, not a break.
 
+## Identity-only mode and what it means for the consumers
+
+Three apps, three different relationships to the package:
+
+- vocatio-frontend: no users of its own beyond sign-in. Takes `Schema`,
+  `RequireAuth`, the lot.
+- vidistet: a users table with a global admin role and team membership
+  referencing it, its own session store, gin middleware other packages depend
+  on, and a preferences handler that resolves the cookie itself. Takes the
+  flow via `OnSignIn`, keeps everything else.
+- copywrite: password sign-in with TOTP, JWT sessions, a pgx pool rather than
+  `database/sql`, and a user list that decides who may edit. Takes the flow
+  via `OnSignIn`, links to an existing user, never creates one.
+
+An app linking an identity to an existing account by email must require
+`Identity.EmailVerified`; the doc comment on `OnSignIn` says so.
+
+## Shared infrastructure, one change
+
+iac#286 and homelab#1163 carry all three clients rather than one each: one
+tofu apply, one Authelia restart. Per-app Microservice changes stay in their
+own homelab PRs so each app rolls back alone.
+
+- iac: a `random_password` per app, plaintext to
+  `/apps/<app>/oidc/client-secret`, bcrypt digest to
+  `/apps/authelia/clients/<app>/client-secret-digest`. The vocatio-frontend
+  and vidistet roles read `/apps/<app>/*` on homelab; copywrite's does on
+  production.
+- Authelia: groups `vocatio-users`, `vidistet-users`, `vidistet-admins` and
+  `copywrite-users` on `simeon`; one deny-by-default `two_factor` policy per
+  app; one confidential client per app with PKCE S256, `client_secret_basic`,
+  `authorization_code` only, scopes `openid profile email groups`, and
+  `consent_mode: pre-configured` for a week as the Flux clients have.
+  Redirect URIs: `https://vocatio.taild816.ts.net/auth/callback`,
+  `https://vidistet.${zone_name}/api/auth/callback`,
+  `https://copywrite.${zone_name}/login/sso/callback`.
+
 ## vocatio-frontend swap
 
 Four PRs, in this order. Each step leaves the app signing in.
@@ -205,6 +256,107 @@ Four PRs, in this order. Each step leaves the app signing in.
    vocatio-frontend external-secrets role away from
    `/infra/github-apps/sierranatech-authenticity/*` once vidistet has moved
    too.
+
+## vidistet swap
+
+vidistet signs in with a hand-rolled GitHub OAuth client in `internal/auth`,
+not go-modules' `githubauth`. The swap replaces that client and nothing else.
+
+What changes:
+
+- `internal/auth/github.go` and its test go. `handlers.go` keeps `Me`,
+  `Logout` and `upsertUser`; `Login` and `Callback` become
+  `oidcauth.LoginHandler` and `CallbackHandler` wrapped with `gin.WrapF`,
+  with `OnSignIn` doing what the old callback did after fetching the GitHub
+  user: upsert, session, cookie, redirect to `/dashboard`. `session.go`,
+  `middleware.go`, `model.go`, the preferences cookie lookup and the hourly
+  cleanup are untouched.
+- schema, additive migration: `users` gains `subject TEXT UNIQUE` and
+  `username TEXT NOT NULL DEFAULT ''`; `github_id` and `github_login` drop
+  NOT NULL; `username` is backfilled from `github_login`. Existing rows and
+  the integration tests' inserts keep working.
+- upsert, in order: match on `subject`; else adopt a row with `subject IS
+  NULL` and the same lowercased email, only when `EmailVerified`; else insert.
+  A legacy user whose GitHub email differs from their Authelia email gets a
+  fresh row, and the owner moves `team_members` by hand once. Decision for
+  the owner: how many legacy users there are; the production database could
+  not be read from this session.
+- admin: `ADMIN_GITHUB_LOGINS` becomes `ADMIN_GROUP` (default
+  `vidistet-admins`), matched against `Identity.Groups`. The promotion-only
+  CASE stays; demotion stays a manual database change, as today.
+- teams add a member by `username` instead of `github_login`: service,
+  handler JSON field and the dashboard template. The `User` JSON gains
+  `username` and keeps `github_login` so the template change is a rename.
+- config: `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`
+  (required), `OIDC_REDIRECT_URL` (default `BASE_URL + /api/auth/callback`),
+  `ALLOWED_GROUPS` (required), `ADMIN_GROUP`. The `GITHUB_*` variables go.
+- `cmd/mock-github`, its README section, and `GITHUB_*_BASE_URL` go. No mock
+  issuer replaces them. CI's smoke test only hits `/health`, `/dashboard` and
+  a status page, so it runs with an unreachable `https://auth.invalid` issuer:
+  `New` makes no network call.
+- login page: "Sign in with SSO".
+
+homelab, two PRs: the vidistet Microservice gains `OIDC_ISSUER_URL`,
+`OIDC_CLIENT_ID`, `ALLOWED_GROUPS`, `ADMIN_GROUP` and the `OIDC_CLIENT_SECRET`
+secretRef with the GitHub entries kept; a cleanup PR removes the GitHub
+entries once the new image has rolled.
+
+Tests: the existing middleware tests stay. `upsertUser` gets a table test
+over the three match cases against Postgres. Config tests follow the new
+variables.
+
+After deploy: a fresh browser at `https://vidistet.sierrana.co.uk` redirects
+to Authelia, two factors, dashboard loads with the signed-in name; a user in
+`vidistet-admins` can create a team; adding a member by Authelia username
+works.
+
+Rollback: revert the vidistet PR; the previous image reads the `GITHUB_*`
+variables still present. The migration is additive, so no schema rollback.
+
+## copywrite swap
+
+copywrite keeps password sign-in, reset, TOTP and JWT sessions. A "Sign in
+with SSO" button on the login page is the only visible change.
+
+What changes:
+
+- `go.mod` and `mise.toml` move to Go 1.27.1 (the root module requires it);
+  the Dockerfile already builds on `golang:1.27-alpine`.
+- migration `000015_add_oidc_subject.up.sql`: `users` gains `oidc_subject
+  TEXT UNIQUE`.
+- config: `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, all
+  optional. SSO is enabled only when all three are set, so local runs and the
+  smoke test are unchanged.
+- routes: `GET /login/sso` and `GET /login/sso/callback`, mounted straight on
+  chi; `New(nil, ...)` with `OnSignIn`. The login template shows the button
+  when SSO is enabled. No CSRF token: a GET, and the state cookie covers it.
+- `OnSignIn`, in order: match a user by `oidc_subject`; else, only when
+  `EmailVerified`, match by lowercased email and store the subject; else
+  render the login page with "No CopyWrite account for that address" and
+  create nothing. Subject first means an email change at the identity
+  provider cannot reach a different copywrite account later.
+- on a match: `startSession` directly. Decisions for the owner, both
+  recommended yes: skip copywrite's own TOTP step for SSO sign-ins, since
+  Authelia enforced two factors; and mark the user's email verified on link,
+  since the identity provider asserted it.
+- store: `GetUserByOIDCSubject`, `SetOIDCSubject`.
+
+homelab, two PRs: the copywrite Microservice gains `OIDC_ISSUER_URL` and
+`OIDC_CLIENT_ID` in `config` and an `oidc-client-secret` key on
+`copywrite-secrets` from `/apps/copywrite/oidc/client-secret`, exposed as
+`OIDC_CLIENT_SECRET`. Nothing to clean up afterwards: password sign-in stays.
+
+Tests: `OnSignIn`'s three branches as handler tests against the test
+database, with a stub identity; the login template renders the button only
+when SSO is enabled.
+
+After deploy: password sign-in still works for an invited user; the SSO
+button on `https://copywrite.sierrana.co.uk/login` signs `simeon` in through
+Authelia and lands on the dashboard without a TOTP prompt; an Authelia account
+with no copywrite user sees the "no account" message and no row appears.
+
+Rollback: revert the copywrite PR. The `oidc_subject` column is additive and
+can stay.
 
 ## Checks
 
