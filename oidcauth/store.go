@@ -32,6 +32,8 @@ CREATE TABLE sessions (
     expires_at timestamptz NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE INDEX sessions_user_id_idx ON sessions (user_id);
 `
 
 // User is a signed-in identity. Subject is the issuer's stable identifier
@@ -48,10 +50,10 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Session is a signed-in session, keyed by an opaque bearer token held in a
+// session is a signed-in session, keyed by an opaque bearer token held in a
 // cookie. The sessions table's own primary key is not read, so a consumer
 // with an existing sessions table keyed differently can keep it.
-type Session struct {
+type session struct {
 	UserID    int64
 	Token     string
 	ExpiresAt time.Time
@@ -106,8 +108,9 @@ func (s *sessionStore) upsertUser(ctx context.Context, id *Identity) (*User, err
 	return u, nil
 }
 
-// create inserts the session and sweeps the user's expired ones, so a browser
-// that never returns does not leave its row behind forever.
+// create inserts the session and sweeps this user's expired ones. A user who
+// never signs in again keeps their expired rows; they are bounded by that
+// user's past sign-ins, and the user_id index keeps the sweep cheap.
 func (s *sessionStore) create(ctx context.Context, userID int64, token string, ttl time.Duration) error {
 	now := s.now()
 	if _, err := s.db.ExecContext(ctx,
@@ -126,8 +129,8 @@ func (s *sessionStore) create(ctx context.Context, userID int64, token string, t
 // findByToken returns (nil, nil) for a missing or expired token: missing and
 // expired are the same thing to a caller deciding whether a request is
 // authenticated.
-func (s *sessionStore) findByToken(ctx context.Context, token string) (*Session, error) {
-	var sess Session
+func (s *sessionStore) findByToken(ctx context.Context, token string) (*session, error) {
+	var sess session
 	err := s.db.QueryRowContext(ctx,
 		`SELECT user_id, token, expires_at, created_at FROM sessions WHERE token = $1`,
 		token,

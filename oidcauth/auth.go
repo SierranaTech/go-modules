@@ -29,8 +29,8 @@
 //	auth, err := oidcauth.New(nil, oidcauth.Config{
 //		// ...issuer and client settings as above...
 //		OnSignIn: func(w http.ResponseWriter, r *http.Request, id *oidcauth.Identity) {
-//			// look up or link the app's user by id.Subject or id.Email,
-//			// start the app's session, redirect
+//			// look up the app's user by id.Subject, or link one by id.Email
+//			// only when id.EmailVerified; start the app's session; redirect
 //		},
 //	})
 //
@@ -110,8 +110,12 @@ type Config struct {
 	// OnSignIn, when set, receives the verified identity at the end of
 	// CallbackHandler, after the AllowedGroups check, and must write the
 	// response. No user row, session or cookie is created and db may be nil;
-	// RequireAuth, MeHandler and LogoutHandler are then not available. For an
-	// app that keeps its own users and sessions.
+	// RequireAuth, Authenticate, MeHandler and LogoutHandler then fail with
+	// ErrNoDatabase. For an app that keeps its own users and sessions.
+	//
+	// An app that links an identity to an existing account by Email must
+	// require EmailVerified, or anyone who can set an unverified address at
+	// the issuer can take over that account. Match on Subject first.
 	OnSignIn func(w http.ResponseWriter, r *http.Request, id *Identity)
 	// Now returns the current time. Defaults to time.Now; a test injects a
 	// clock to drive session and ID token expiry.
@@ -199,22 +203,22 @@ func checkHTTPSURL(raw string) error {
 func (a *Auth) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	state, err := randomToken()
 	if err != nil {
-		a.internalError(w, err)
+		a.internalError(w, "login", err)
 		return
 	}
 	nonce, err := randomToken()
 	if err != nil {
-		a.internalError(w, err)
+		a.internalError(w, "login", err)
 		return
 	}
 	verifier, challenge, err := generatePKCE()
 	if err != nil {
-		a.internalError(w, err)
+		a.internalError(w, "login", err)
 		return
 	}
 	target, err := a.provider.authURL(r.Context(), state, nonce, challenge)
 	if err != nil {
-		a.internalError(w, err)
+		a.internalError(w, "login", err)
 		return
 	}
 
@@ -236,10 +240,20 @@ func (a *Auth) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	nonceCookie, nonceErr := r.Cookie(flowNonceCookie)
 	verifierCookie, verifierErr := r.Cookie(flowVerifierCookie)
 
+	// State is checked before anything else, error redirects included (RFC
+	// 6749 4.1.2.1 carries state on those too): a stray cross-site request to
+	// the callback must not be able to abort someone else's sign-in.
+	if stateErr != nil || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(stateCookie.Value)) != 1 ||
+		nonceErr != nil || verifierErr != nil {
+		http.Error(w, "invalid sign-in state", http.StatusBadRequest)
+		return
+	}
+	// Single-use from here on, defence in depth.
+	a.clearFlowCookies(w)
+
 	// The issuer reports a refused sign-in (e.g. a user outside the client's
 	// authorization policy) as an error redirect rather than a code.
 	if e := q.Get("error"); e != "" {
-		a.clearFlowCookies(w)
 		if e == "access_denied" {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
@@ -247,19 +261,14 @@ func (a *Auth) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign-in failed: "+e, http.StatusBadRequest)
 		return
 	}
-	if stateErr != nil || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(stateCookie.Value)) != 1 ||
-		nonceErr != nil || verifierErr != nil || q.Get("code") == "" {
+	if q.Get("code") == "" {
 		http.Error(w, "invalid sign-in state", http.StatusBadRequest)
 		return
 	}
-	// Cleared only once the state matched: a stray cross-site request to the
-	// callback must not be able to abort someone else's sign-in. Single-use
-	// from here on, defence in depth.
-	a.clearFlowCookies(w)
 
 	tokens, err := a.provider.exchangeCode(r.Context(), q.Get("code"), verifierCookie.Value)
 	if err != nil {
-		a.internalError(w, err)
+		a.internalError(w, "callback", err)
 		return
 	}
 	idToken, err := parseIDToken(tokens.IDToken, a.cfg.IssuerURL, a.cfg.ClientID, nonceCookie.Value, a.cfg.Now())
@@ -269,7 +278,7 @@ func (a *Auth) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	info, err := a.provider.userinfo(r.Context(), tokens.AccessToken)
 	if err != nil {
-		a.internalError(w, err)
+		a.internalError(w, "callback", err)
 		return
 	}
 	if info.Subject != idToken.Subject {
@@ -291,16 +300,16 @@ func (a *Auth) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	user, err := a.sessions.upsertUser(r.Context(), info.identity())
 	if err != nil {
-		a.internalError(w, err)
+		a.internalError(w, "callback", err)
 		return
 	}
 	token, err := randomToken()
 	if err != nil {
-		a.internalError(w, err)
+		a.internalError(w, "callback", err)
 		return
 	}
 	if err := a.sessions.create(r.Context(), user.ID, token, sessionTTL); err != nil {
-		a.internalError(w, err)
+		a.internalError(w, "callback", err)
 		return
 	}
 
@@ -311,6 +320,10 @@ func (a *Auth) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 // LogoutHandler deletes the session (if any) and clears the cookie. It ends
 // this app's session only; the issuer's own session is untouched.
 func (a *Auth) LogoutHandler(w http.ResponseWriter, r *http.Request) {
+	if a.sessions.db == nil {
+		a.internalError(w, "logout", ErrNoDatabase)
+		return
+	}
 	if c, err := r.Cookie(a.cfg.CookieName); err == nil && c.Value != "" {
 		a.sessions.delete(r.Context(), c.Value)
 	}
@@ -337,11 +350,18 @@ const userCtxKey ctxKey = iota
 // session cookie, or a cookie naming a session that is missing or expired.
 var ErrUnauthenticated = errors.New("oidcauth: not authenticated")
 
+// ErrNoDatabase is returned by the session handlers when New was given a nil
+// db, which only Config.OnSignIn mode allows.
+var ErrNoDatabase = errors.New("oidcauth: no database configured; only LoginHandler and CallbackHandler work with OnSignIn")
+
 // Authenticate resolves the request's session cookie to its User. It returns
 // ErrUnauthenticated when there is no valid session and any other error for a
 // database failure. RequireAuth is built on it; a consumer on a router with
 // its own middleware shape (gin, chi) calls it directly.
 func (a *Auth) Authenticate(r *http.Request) (*User, error) {
+	if a.sessions.db == nil {
+		return nil, ErrNoDatabase
+	}
 	c, err := r.Cookie(a.cfg.CookieName)
 	if err != nil || c.Value == "" {
 		return nil, ErrUnauthenticated
@@ -353,7 +373,13 @@ func (a *Auth) Authenticate(r *http.Request) (*User, error) {
 	if session == nil {
 		return nil, ErrUnauthenticated
 	}
-	return a.sessions.findUserByID(r.Context(), session.UserID)
+	user, err := a.sessions.findUserByID(r.Context(), session.UserID)
+	if errors.Is(err, sql.ErrNoRows) {
+		// The user row went away under a live session (a sessions table
+		// without ON DELETE CASCADE). Treat as signed out, not as a failure.
+		return nil, ErrUnauthenticated
+	}
+	return user, err
 }
 
 // RequireAuth rejects a request with no valid session, and otherwise attaches
@@ -366,7 +392,7 @@ func (a *Auth) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 		if err != nil {
-			a.internalError(w, err)
+			a.internalError(w, "authenticate", err)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userCtxKey, user)))
@@ -408,10 +434,11 @@ func (a *Auth) clearCookie(w http.ResponseWriter, name string) {
 }
 
 // internalError responds generically and logs the cause through the default
-// slog logger, so an operator can tell a discovery, token, userinfo or
-// database failure apart without the error reaching the browser.
-func (a *Auth) internalError(w http.ResponseWriter, err error) {
-	slog.Error("oidcauth: sign-in failed", "err", err)
+// slog logger with the stage it failed in, so an operator can tell a
+// discovery, token, userinfo or database failure apart without the error
+// reaching the browser.
+func (a *Auth) internalError(w http.ResponseWriter, stage string, err error) {
+	slog.Error("oidcauth: request failed", "stage", stage, "err", err)
 	writeJSONError(w, http.StatusInternalServerError, "internal error")
 }
 

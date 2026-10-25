@@ -91,9 +91,9 @@ func parseIDToken(raw, issuer, clientID, nonce string, now time.Time) (*claims, 
 	if !slices.Contains(c.Audience, clientID) {
 		return nil, fmt.Errorf("oidcauth: ID token audience %v does not include this client", []string(c.Audience))
 	}
-	// OpenID Connect Core 3.1.3.7 steps 4 and 5: with several audiences the
-	// token must name this client as the authorized party.
-	if len(c.Audience) > 1 && c.AuthorizedParty != clientID {
+	// OpenID Connect Core 3.1.3.7 steps 4 and 5: azp, when present, must be
+	// this client, and with several audiences it must be present.
+	if (c.AuthorizedParty != "" || len(c.Audience) > 1) && c.AuthorizedParty != clientID {
 		return nil, fmt.Errorf("oidcauth: ID token azp %q is not this client", c.AuthorizedParty)
 	}
 	if c.Expiry == 0 || !now.Before(time.Unix(c.Expiry, 0)) {

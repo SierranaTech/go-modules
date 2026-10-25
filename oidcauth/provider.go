@@ -78,16 +78,16 @@ func (p *provider) fetchDiscovery(ctx context.Context) (*discovery, error) {
 	}
 	// The endpoints carry the client secret, the ID token and the claims, so
 	// they must meet the same https rule as the issuer (ADR 0003).
-	for name, endpoint := range map[string]string{
-		"authorization_endpoint": d.AuthorizationEndpoint,
-		"token_endpoint":         d.TokenEndpoint,
-		"userinfo_endpoint":      d.UserinfoEndpoint,
+	for _, e := range []struct{ name, url string }{
+		{"authorization_endpoint", d.AuthorizationEndpoint},
+		{"token_endpoint", d.TokenEndpoint},
+		{"userinfo_endpoint", d.UserinfoEndpoint},
 	} {
-		if endpoint == "" {
-			return nil, fmt.Errorf("oidcauth: discovery is missing %s", name)
+		if e.url == "" {
+			return nil, fmt.Errorf("oidcauth: discovery is missing %s", e.name)
 		}
-		if err := checkHTTPSURL(endpoint); err != nil {
-			return nil, fmt.Errorf("oidcauth: discovery %s: %w", name, err)
+		if err := checkHTTPSURL(e.url); err != nil {
+			return nil, fmt.Errorf("oidcauth: discovery %s: %w", e.name, err)
 		}
 	}
 	return &d, nil
@@ -204,7 +204,12 @@ func (p *provider) do(req *http.Request, what string) ([]byte, error) {
 		return nil, fmt.Errorf("oidcauth: read %s response: %w", what, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("oidcauth: %s request returned %d: %s", what, resp.StatusCode, string(body))
+		// Enough of the body to recognise the error, not a whole proxy page.
+		excerpt := body
+		if len(excerpt) > 256 {
+			excerpt = excerpt[:256]
+		}
+		return nil, fmt.Errorf("oidcauth: %s request returned %d: %s", what, resp.StatusCode, string(excerpt))
 	}
 	return body, nil
 }

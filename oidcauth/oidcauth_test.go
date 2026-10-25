@@ -634,6 +634,48 @@ func TestOnSignInReceivesTheIdentityWithoutADatabase(t *testing.T) {
 			t.Fatal("oidcauth set its own session cookie despite OnSignIn")
 		}
 	}
+
+	// The session handlers refuse cleanly rather than touching a nil db.
+	bare, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
+	if _, err := auth.Authenticate(bare); !errors.Is(err, oidcauth.ErrNoDatabase) {
+		t.Fatalf("Authenticate without db: err = %v, want ErrNoDatabase", err)
+	}
+	rec := httptest.NewRecorder()
+	auth.LogoutHandler(rec, bare)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("LogoutHandler without db = %d, want 500", rec.Code)
+	}
+}
+
+// A cross-site GET to the callback carrying only ?error= must not wipe a
+// sign-in that is still in flight.
+func TestErrorRedirectWithoutMatchingStateKeepsTheFlow(t *testing.T) {
+	s := newStack(t, defaultUser(), nil)
+	// Walk the flow by hand up to the issuer's redirect back, without
+	// following it.
+	resp, err := s.noRedirect.Get(s.srv.URL + "/auth/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	resp, err = s.noRedirect.Get(resp.Header.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	back, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp, _ := s.get(t, "/auth/callback?error=access_denied"); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("stray error callback = %d, want 400", resp.StatusCode)
+	}
+	// Finishing the real flow still works: the cookies survived.
+	resp, _ = s.get(t, back.RequestURI())
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("real callback after stray error = %d, want 200", resp.StatusCode)
+	}
 }
 
 func TestNewValidatesConfig(t *testing.T) {

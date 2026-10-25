@@ -50,6 +50,8 @@ func TestParseIDToken(t *testing.T) {
 		{"valid with array aud and azp", unsignedToken(t, base(func(p map[string]any) { p["aud"] = []string{"other", clientID}; p["azp"] = clientID })), now, ""},
 		{"array aud without azp", unsignedToken(t, base(func(p map[string]any) { p["aud"] = []string{"other", clientID} })), now, "azp"},
 		{"array aud with another azp", unsignedToken(t, base(func(p map[string]any) { p["aud"] = []string{"other", clientID}; p["azp"] = "other" })), now, "azp"},
+		{"single aud with another azp", unsignedToken(t, base(func(p map[string]any) { p["azp"] = "other" })), now, "azp"},
+		{"single aud with own azp", unsignedToken(t, base(func(p map[string]any) { p["azp"] = clientID })), now, ""},
 		{"issuer trailing slash is tolerated", unsignedToken(t, base(func(p map[string]any) { p["iss"] = issuer + "/" })), now, ""},
 		{"wrong issuer", unsignedToken(t, base(func(p map[string]any) { p["iss"] = "https://evil.example.com" })), now, "issuer"},
 		{"audience excludes client", unsignedToken(t, base(func(p map[string]any) { p["aud"] = []string{"other"} })), now, "audience"},
