@@ -2,9 +2,7 @@ package oidcauth_test
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
@@ -106,8 +104,8 @@ func (c *clock) Advance(d time.Duration) {
 // fakeIssuer is an in-process OpenID Connect provider: discovery,
 // authorization (which redirects straight back with a code), token (which
 // checks client_secret_basic, the code and a PKCE verifier) and userinfo
-// (which checks the bearer token). It signs ID tokens with HS256 only so they
-// look like real ones; the package under test does not verify them.
+// (which checks the bearer token). ID tokens carry a junk signature: the
+// package under test does not verify them (ADR 0003).
 type fakeIssuer struct {
 	srv          *httptest.Server
 	clientID     string
@@ -185,7 +183,7 @@ func newFakeIssuer(t *testing.T, user map[string]any, now func() time.Time) *fak
 		}
 		f.mu.Unlock()
 		writeJSON(w, map[string]string{
-			"access_token": "fake-access", "token_type": "Bearer", "id_token": signHS256(t, payload),
+			"access_token": "fake-access", "token_type": "Bearer", "id_token": fakeIDToken(t, payload),
 		})
 	})
 	mux.HandleFunc("GET /userinfo", func(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +211,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func signHS256(t *testing.T, payload map[string]any) string {
+func fakeIDToken(t *testing.T, payload map[string]any) string {
 	t.Helper()
 	seg := func(v any) string {
 		b, err := json.Marshal(v)
@@ -222,10 +220,8 @@ func signHS256(t *testing.T, payload map[string]any) string {
 		}
 		return base64.RawURLEncoding.EncodeToString(b)
 	}
-	signingInput := seg(map[string]string{"alg": "HS256", "typ": "JWT"}) + "." + seg(payload)
-	mac := hmac.New(sha256.New, []byte("fake-issuer-key"))
-	mac.Write([]byte(signingInput))
-	return signingInput + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return seg(map[string]string{"alg": "RS256", "typ": "JWT"}) + "." + seg(payload) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte("not-a-signature"))
 }
 
 func defaultUser() map[string]any {

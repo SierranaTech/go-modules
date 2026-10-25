@@ -74,9 +74,6 @@ func scanUser(row *sql.Row) (*User, error) {
 	if err := json.Unmarshal(groups, &u.Groups); err != nil {
 		return nil, fmt.Errorf("decode groups: %w", err)
 	}
-	if u.Groups == nil {
-		u.Groups = []string{}
-	}
 	return &u, nil
 }
 
