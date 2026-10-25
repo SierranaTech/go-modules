@@ -44,3 +44,25 @@ The set of header names and form-field names that `obs` redacts from a
 Sentry event before send. The module ships a safe default; a consumer may
 add to it but cannot shrink it.
 _Avoid_: denylist, filter list, redaction set.
+
+**Identity provider**:
+The service an app sends people to for sign-in over OpenID Connect. For
+SierranaTech's own apps that is Authelia at `auth.sierrana.co.uk`; the
+`oidcauth` package accepts any issuer.
+_Avoid_: SSO server, auth server, IdP (in prose)
+
+**Client**:
+One app's registration with the identity provider: a client ID, a client
+secret and the redirect URIs it may use. One app, one client.
+_Avoid_: application, integration, OAuth app
+
+**Subject**:
+The identity provider's stable identifier for one person, the `sub` claim.
+Unique within one identity provider; it is what a user row is keyed on.
+_Avoid_: user ID, account ID, login
+
+**Session**:
+A signed-in browser's standing with one app: an opaque token in a cookie,
+stored in the app's own database with an expiry. Outlives an identity
+provider outage; ends on logout or expiry.
+_Avoid_: login, token, cookie (for the whole thing)
