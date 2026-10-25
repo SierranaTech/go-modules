@@ -18,7 +18,8 @@ Root module packages:
 
 | Import path | Purpose |
 |---|---|
-| `github.com/SierranaTech/go-modules/githubauth` | GitHub OAuth sign-in and session handling, optionally allowlisted to specific GitHub logins |
+| `github.com/SierranaTech/go-modules/githubauth` | Deprecated: GitHub OAuth sign-in, removed in `v1.0.0` once every consumer has moved to `oidcauth` |
+| `github.com/SierranaTech/go-modules/oidcauth` | OpenID Connect sign-in (any issuer, Authelia first) and session handling, optionally restricted to members of given groups |
 
 More stdlib-only packages (`config`, `log`, `httpx`, `pushover`, `postmark`)
 land in the root module as they're needed. Heavy-dependency packages (`pg`,
