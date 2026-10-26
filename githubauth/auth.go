@@ -25,6 +25,10 @@
 // term "OIDC" (token.actions.githubusercontent.com) is a separate mechanism —
 // workload identity federation for GitHub Actions — with no bearing on a
 // person logging into a website.
+//
+// Deprecated: in-house apps sign in through OpenID Connect instead; use
+// package oidcauth. githubauth is removed in v1.0.0 once every consumer has
+// moved.
 package githubauth
 
 import (
