@@ -192,9 +192,11 @@ Three apps, three different relationships to the package:
 - vocatio-frontend: no users of its own beyond sign-in. Takes `Schema`,
   `RequireAuth`, the lot.
 - vidistet: a users table with a global admin role and team membership
-  referencing it, its own session store, gin middleware other packages depend
-  on, and a preferences handler that resolves the cookie itself. Takes the
-  flow via `OnSignIn`, keeps everything else.
+  referencing it. Takes the package whole, like vocatio-frontend, with
+  oidcauth's `Schema` applied as an additive migration to its existing
+  tables (the owner's call on 2026-10-26, replacing an identity-only draft).
+  Its own session store and GitHub client go; a thin gin middleware over
+  `Authenticate` derives the admin role from the groups claim.
 - copywrite: password sign-in with TOTP, JWT sessions, a pgx pool rather than
   `database/sql`, and a user list that decides who may edit. Takes the flow
   via `OnSignIn`, links to an existing user, never creates one.
@@ -260,30 +262,29 @@ Four PRs, in this order. Each step leaves the app signing in.
 ## vidistet swap
 
 vidistet signs in with a hand-rolled GitHub OAuth client in `internal/auth`,
-not go-modules' `githubauth`. The swap replaces that client and nothing else.
+not go-modules' `githubauth`. The swap replaces that client, the session
+store and the user upsert with oidcauth's own.
 
 What changes:
 
-- `internal/auth/github.go` and its test go. `handlers.go` keeps `Me`,
-  `Logout` and `upsertUser`; `Login` and `Callback` become
-  `oidcauth.LoginHandler` and `CallbackHandler` wrapped with `gin.WrapF`,
-  with `OnSignIn` doing what the old callback did after fetching the GitHub
-  user: upsert, session, cookie, redirect to `/dashboard`. `session.go`,
-  `middleware.go`, `model.go`, the preferences cookie lookup and the hourly
-  cleanup are untouched.
-- schema, additive migration: `users` gains `subject TEXT UNIQUE` and
-  `username TEXT NOT NULL DEFAULT ''`; `github_id` and `github_login` drop
-  NOT NULL; `username` is backfilled from `github_login`. Existing rows and
-  the integration tests' inserts keep working.
-- upsert, in order: match on `subject`; else adopt a row with `subject IS
-  NULL` and the same lowercased email, only when `EmailVerified`; else insert.
-  A legacy user whose GitHub email differs from their Authelia email gets a
-  fresh row, and the owner moves `team_members` by hand once. Decision for
-  the owner: how many legacy users there are; the production database could
-  not be read from this session.
-- admin: `ADMIN_GITHUB_LOGINS` becomes `ADMIN_GROUP` (default
-  `vidistet-admins`), matched against `Identity.Groups`. The promotion-only
-  CASE stays; demotion stays a manual database change, as today.
+- `internal/auth` shrinks to `model.go` (the `User` handlers see, with a
+  derived `Role`), `middleware.go` (a gin wrapper over
+  `oidcauth.Authenticate`, plus the unchanged admin and team middlewares) and
+  `handlers.go` (`Me`). Login, callback and logout are oidcauth's handlers
+  mounted with `gin.WrapF`; the cookie keeps its `vidistet_session` name and
+  a successful sign-in lands on `/dashboard`.
+- schema, additive migration: `users` gains `subject TEXT UNIQUE`, `username`
+  and `groups JSONB`, the columns oidcauth's upsert writes; `github_id` and
+  `github_login` drop NOT NULL. Legacy rows keep their GitHub columns, are
+  never matched by subject, and have their sessions deleted in the same
+  migration so they cannot outlive the cutover. The owner chose to start
+  fresh: a legacy user's teams are recreated or reassigned by hand.
+- admin: `ADMIN_GITHUB_LOGINS` becomes `ADMIN_GROUP`, no default. Role is
+  derived from the groups claim oidcauth stored at sign-in, so leaving the
+  group ends admin on the next sign-in. The `role` column is no longer
+  written.
+- the preferences handler resolves the theme through `Authenticate`; the
+  hourly cleanup deletes expired sessions with one statement.
 - teams add a member by `username` instead of `github_login`: service,
   handler JSON field and the dashboard template. The `User` JSON gains
   `username` and keeps `github_login` so the template change is a rename.
@@ -301,9 +302,10 @@ homelab, two PRs: the vidistet Microservice gains `OIDC_ISSUER_URL`,
 secretRef with the GitHub entries kept; a cleanup PR removes the GitHub
 entries once the new image has rolled.
 
-Tests: the existing middleware tests stay. `upsertUser` gets a table test
-over the three match cases against Postgres. Config tests follow the new
-variables.
+Tests: the existing admin and team middleware tests stay. `Middleware` gets a
+test that a stored session resolves to a user whose role follows the admin
+group, and that no cookie is a 401. The sign-in flow itself is covered by
+oidcauth's tests.
 
 After deploy: a fresh browser at `https://vidistet.sierrana.co.uk` redirects
 to Authelia, two factors, dashboard loads with the signed-in name; a user in
