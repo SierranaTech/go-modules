@@ -221,6 +221,40 @@ func TestCaptureFallsBackToCurrentHub(t *testing.T) {
 	}
 }
 
+func TestCaptureWithoutErrorSendsTheMessage(t *testing.T) {
+	mock := &sentry.MockTransport{}
+	client, err := sentry.NewClient(sentry.ClientOptions{
+		Dsn:       "https://key@example.test/1",
+		Transport: mock,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	hub := sentry.NewHub(client, sentry.NewScope())
+	ctx := sentry.SetHubOnContext(context.Background(), hub)
+
+	Capture(ctx, "invoice.paid: no user_id in subscription metadata", nil, "stripe_event_id", "evt_1")
+	CaptureFingerprint(ctx, "reconcile skipped", nil, []string{"reconcile", "skipped"})
+	hub.Flush(0)
+
+	events := mock.Events()
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2", len(events))
+	}
+	if got := events[0].Message; got != "invoice.paid: no user_id in subscription metadata" {
+		t.Errorf("message = %q, want the capture message", got)
+	}
+	if len(events[0].Exception) != 0 {
+		t.Errorf("exception = %v, want none", events[0].Exception)
+	}
+	if got := events[0].Tags["stripe_event_id"]; got != "evt_1" {
+		t.Errorf("stripe_event_id tag = %q, want %q", got, "evt_1")
+	}
+	if got := events[1].Message; got != "reconcile skipped" {
+		t.Errorf("fingerprinted message = %q, want %q", got, "reconcile skipped")
+	}
+}
+
 func TestCaptureFingerprintSetsFingerprint(t *testing.T) {
 	mock := &sentry.MockTransport{}
 	client, err := sentry.NewClient(sentry.ClientOptions{

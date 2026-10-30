@@ -25,7 +25,7 @@ func Capture(ctx context.Context, msg string, err error, fields ...any) {
 	}
 	hub.WithScope(func(scope *sentry.Scope) {
 		scope.SetTags(tags)
-		hub.CaptureException(err)
+		send(hub, msg, err)
 	})
 }
 
@@ -45,8 +45,18 @@ func CaptureFingerprint(ctx context.Context, msg string, err error, fingerprint 
 	hub.WithScope(func(scope *sentry.Scope) {
 		scope.SetFingerprint(fingerprint)
 		scope.SetTags(tags)
-		hub.CaptureException(err)
+		send(hub, msg, err)
 	})
+}
+
+// send reports err, or msg alone when there is no error: Sentry rejects a
+// nil exception with a usage error that loses the message.
+func send(hub *sentry.Hub, msg string, err error) {
+	if err == nil {
+		hub.CaptureMessage(msg)
+		return
+	}
+	hub.CaptureException(err)
 }
 
 // tagsFromFields converts Capture/CaptureFingerprint's key/value pairs
