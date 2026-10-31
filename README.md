@@ -20,6 +20,7 @@ Root module packages:
 |---|---|
 | `github.com/SierranaTech/go-modules/githubauth` | Deprecated: GitHub OAuth sign-in, removed in `v1.0.0` once every consumer has moved to `oidcauth` |
 | `github.com/SierranaTech/go-modules/oidcauth` | OpenID Connect sign-in (any issuer, Authelia first) and session handling, optionally restricted to members of given groups |
+| `github.com/SierranaTech/go-modules/retry` | Retry with exponential backoff and full jitter for network errors, timeouts, 429 and 5xx, honouring `Retry-After` |
 
 More stdlib-only packages (`config`, `log`, `httpx`, `pushover`, `postmark`)
 land in the root module as they're needed. Heavy-dependency packages (`pg`,
