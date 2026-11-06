@@ -121,6 +121,10 @@ func ServerError(w http.ResponseWriter, r *http.Request, msg string, err error, 
 	} else {
 		Capture(r.Context(), msg, err, fields...)
 	}
+	writeError(w, msg)
+}
+
+func writeError(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusInternalServerError)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
