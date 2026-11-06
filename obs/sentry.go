@@ -2,6 +2,7 @@ package obs
 
 import (
 	"log"
+	"net/http"
 	"os"
 	"slices"
 	"strconv"
@@ -125,7 +126,13 @@ type scrubber struct {
 	fields  []string
 }
 
-func (s scrubber) beforeSend(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+func (s scrubber) beforeSend(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
+	// sentryhttp reports every panic before re-raising it, and ReverseProxy
+	// raises this one whenever a client disconnects mid-body. Exact equality
+	// matches what Recoverer re-raises: a wrapped value is an ordinary panic.
+	if hint != nil && hint.RecoveredException == http.ErrAbortHandler { //nolint:errorlint // net/http compares it the same way
+		return nil
+	}
 	if event.Request == nil {
 		return event
 	}

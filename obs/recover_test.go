@@ -3,6 +3,7 @@ package obs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -99,15 +100,55 @@ func TestRecovererGivesHandlersARequestHub(t *testing.T) {
 	}
 }
 
-func TestRecovererLetsErrAbortHandlerReachNetHTTP(t *testing.T) {
-	ctx, _, _ := streakHub(t)
+// initHub builds the client through initWith, because the filter on
+// http.ErrAbortHandler only exists on a client built that way.
+func initHub(t *testing.T) *sentry.MockTransport {
+	t.Helper()
+	t.Setenv("SENTRY_DSN", "https://key@example.test/1")
+	mock := &sentry.MockTransport{}
+	t.Cleanup(func() { sentry.CurrentHub().BindClient(nil) })
+	initWith(Config{Service: "widget"}, mock)
+	return mock
+}
+
+func TestRecovererLetsErrAbortHandlerReachNetHTTPUnreported(t *testing.T) {
+	mock := initHub(t)
 	defer func() {
 		if got := recover(); got != http.ErrAbortHandler { //nolint:errorlint // asserting the exact sentinel
 			t.Errorf("recovered %v, want http.ErrAbortHandler", got)
 		}
+		if n := len(mock.Events()); n != 0 {
+			t.Errorf("got %d Sentry events for http.ErrAbortHandler, want 0", n)
+		}
 	}()
-	panicRequest(ctx, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) }))
+	panicRequest(context.Background(), http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) }))
 	t.Error("Recoverer swallowed http.ErrAbortHandler")
+}
+
+func TestInitClientStillReportsOtherPanics(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+	}{
+		{"string", "kaboom"},
+		{"error", errors.New("kaboom")},
+		{"wrapped abort", fmt.Errorf("wrapped: %w", http.ErrAbortHandler)},
+		{"uncomparable", []string{"kaboom"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := initHub(t)
+
+			rec := panicRequest(context.Background(), http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(tc.value) }))
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500", rec.Code)
+			}
+			if n := len(mock.Events()); n != 1 {
+				t.Errorf("got %d events, want 1", n)
+			}
+		})
+	}
 }
 
 func TestRecovererWritesNothingOnAnUpgradeRequest(t *testing.T) {

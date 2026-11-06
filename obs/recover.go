@@ -18,12 +18,15 @@ const minLoopDelay = time.Second
 
 // Recoverer makes a handler panic reach Sentry while the client still gets a
 // JSON 500. It also gives every request the hub Capture and ServerError rely
-// on, so it replaces any other sentryhttp middleware rather than joining it.
+// on. It replaces both chi's Recoverer and sentryhttp: if chi's stays inside
+// it, chi swallows the panic and Sentry sees nothing.
 //
 // sentryhttp has to re-panic: without that it swallows the panic and the
 // client gets an empty 200. http.ErrAbortHandler carries on up to net/http,
-// which aborts the connection. A panic after the response has started cannot
-// change the status, and the error body lands after what was already written.
+// which aborts the connection. Keeping it out of Sentry depends on the client
+// being built by Init, whose BeforeSend filters it. A panic after the response
+// has started cannot change the status, and the error body lands after what
+// was already written.
 func Recoverer(next http.Handler) http.Handler {
 	capture := sentryhttp.New(sentryhttp.Options{Repanic: true}).Handle(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,8 +59,9 @@ func Go(ctx context.Context, name string, fn func()) {
 
 // Loop calls fn until ctx is cancelled, waiting every between calls, and blocks
 // until it stops: start it with go. A worker whose fn blocks until ctx is
-// cancelled only comes back round after a panic or an early return, so every is
-// then just the base of the restart delay.
+// cancelled only comes back round after a panic or an early return. When fn
+// blocks with its own ticker, every is only the restart delay, so pass a small
+// value rather than the worker's tick.
 //
 // Every panic is logged and sent to Sentry, grouped by name, then fn restarts
 // after a delay from Streak: doubling from every, capped at five minutes. A run
