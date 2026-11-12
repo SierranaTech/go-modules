@@ -23,14 +23,13 @@ One repo, `github.com/SierranaTech/go-modules`, as a multi-module repo:
   needs two of them wires both itself.
 - a committed `go.work` at the root for in-repo development; consumers
   ignore it and pin tags.
-- releases are manual (`git tag obs/v0.2.0 && git push --tags`), matching
-  `stiwdiohouse-contracts`. The `SierranaTech/actions` `release`
-  composite, which understands tag prefixes, is the fallback if tagging
-  becomes toil.
+- releases are manual (`git tag obs/v0.2.0 && git push --tags`). A
+  release workflow that understands tag prefixes is the fallback if
+  tagging becomes toil.
 
 ## Considered options
 
-- **Single module, subpackages** (what `stiwdiohouse-contracts` does).
+- **Single module, subpackages**.
   Simplest to release, but every consumer of any package pulls
   `sentry-go`, and later `pgx` and `controller-runtime`, into its build
   graph. Rejected: the whole reason to group this code is that services
@@ -42,7 +41,7 @@ One repo, `github.com/SierranaTech/go-modules`, as a multi-module repo:
 
 ## Consequences
 
-- CI is a matrix over module directories. `go-suite` already supports
+- CI is a matrix over module directories. The shared Go CI action supports
   this via its `working-directory` and `badge-prefix` inputs.
 - A change spanning the root module and a submodule is two tags and two
   PRs in consumers. Acceptable: submodules are meant to be independent.

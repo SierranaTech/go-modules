@@ -5,8 +5,8 @@ copy-pasting (Sentry wiring, config and logging setup, HTTP middleware,
 notification senders). One repo, several independently versioned modules,
 consumed by every `ci` + `ecr` Go service in the org.
 
-This is not the place for inter-service HTTP types. Those live in
-`stiwdiohouse-contracts` (and any future per-project equivalent).
+This is not the place for inter-service HTTP types. Those live in each
+project's own contracts module.
 
 ## Language
 
@@ -30,7 +30,7 @@ _Avoid_: big dep, external dep.
 
 **Consumer**:
 A service repo that imports one or more packages from here. Every consumer
-pins a tag and lists `go-modules` in its `private-modules-token` call.
+pins a tag.
 _Avoid_: client, importer, downstream.
 
 **Migration PR**:
