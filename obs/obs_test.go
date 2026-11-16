@@ -255,6 +255,52 @@ func TestCaptureWithoutErrorSendsTheMessage(t *testing.T) {
 	}
 }
 
+func TestCaptureWithErrorKeepsTheMessage(t *testing.T) {
+	mock := &sentry.MockTransport{}
+	client, err := sentry.NewClient(sentry.ClientOptions{
+		Dsn:       "https://key@example.test/1",
+		Transport: mock,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	hub := sentry.NewHub(client, sentry.NewScope())
+	ctx := sentry.SetHubOnContext(context.Background(), hub)
+
+	Capture(ctx, "refund already made in stripe; reconcile by hand", errors.New("charge_already_refunded"), "payment_id", "p1")
+	CaptureFingerprint(ctx, "reconcile failed", errors.New("conflict"), []string{"reconcile", "conflict"})
+	hub.Flush(0)
+
+	events := mock.Events()
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2", len(events))
+	}
+	for i, want := range []struct{ msg, err string }{
+		{"refund already made in stripe; reconcile by hand", "charge_already_refunded"},
+		{"reconcile failed", "conflict"},
+	} {
+		ev := events[i]
+		if ev.Message != want.msg {
+			t.Errorf("event %d message = %q, want %q", i, ev.Message, want.msg)
+		}
+		if ev.Level != sentry.LevelError {
+			t.Errorf("event %d level = %q, want error", i, ev.Level)
+		}
+		if len(ev.Exception) == 0 || ev.Exception[len(ev.Exception)-1].Value != want.err {
+			t.Errorf("event %d exception = %+v, want value %q", i, ev.Exception, want.err)
+		}
+	}
+	if got := events[0].Tags["payment_id"]; got != "p1" {
+		t.Errorf("payment_id tag = %q, want %q", got, "p1")
+	}
+}
+
+func TestCaptureWithErrorAndNoClientDoesNotPanic(t *testing.T) {
+	hub := sentry.NewHub(nil, sentry.NewScope())
+	ctx := sentry.SetHubOnContext(context.Background(), hub)
+	Capture(ctx, "no sentry configured", errors.New("boom"))
+}
+
 func TestCaptureFingerprintSetsFingerprint(t *testing.T) {
 	mock := &sentry.MockTransport{}
 	client, err := sentry.NewClient(sentry.ClientOptions{
