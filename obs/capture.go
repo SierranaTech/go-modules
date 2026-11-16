@@ -49,14 +49,22 @@ func CaptureFingerprint(ctx context.Context, msg string, err error, fingerprint 
 	})
 }
 
-// send reports err, or msg alone when there is no error: Sentry rejects a
-// nil exception with a usage error that loses the message.
+// send reports err with msg as the event's message, or msg alone when there
+// is no error: Sentry rejects a nil exception with a usage error that loses
+// the message. hub.CaptureException would drop msg, so the event is built
+// here and msg set on it before capture.
 func send(hub *sentry.Hub, msg string, err error) {
 	if err == nil {
 		hub.CaptureMessage(msg)
 		return
 	}
-	hub.CaptureException(err)
+	client := hub.Client()
+	if client == nil {
+		return
+	}
+	event := client.EventFromException(err, sentry.LevelError)
+	event.Message = msg
+	hub.CaptureEventWithHint(event, &sentry.EventHint{OriginalException: err})
 }
 
 // tagsFromFields converts Capture/CaptureFingerprint's key/value pairs
