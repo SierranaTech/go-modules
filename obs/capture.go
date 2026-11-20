@@ -17,6 +17,7 @@ import (
 // doesn't require cross-referencing logs to find out which resource it
 // was about. Use it for mid-request errors that do not return a 500.
 func Capture(ctx context.Context, msg string, err error, fields ...any) {
+	fields = withRequestID(ctx, fields)
 	logFields(msg, err, fields...)
 	tags := tagsFromFields(fields...)
 	hub := sentry.GetHubFromContext(ctx)
@@ -36,6 +37,7 @@ func Capture(ctx context.Context, msg string, err error, fields ...any) {
 // fingerprint, every cause collapses into a single Sentry issue that can
 // never be resolved, since a different cause keeps reopening it.
 func CaptureFingerprint(ctx context.Context, msg string, err error, fingerprint []string, fields ...any) {
+	fields = withRequestID(ctx, fields)
 	logFields(msg, err, fields...)
 	tags := tagsFromFields(fields...)
 	hub := sentry.GetHubFromContext(ctx)
@@ -125,7 +127,7 @@ func ClearBreadcrumbs(ctx context.Context) {
 // nobody is left to receive the response.
 func ServerError(w http.ResponseWriter, r *http.Request, msg string, err error, fields ...any) {
 	if errors.Is(r.Context().Err(), context.Canceled) {
-		logFields(msg+" (client disconnected)", err, fields...)
+		logFields(msg+" (client disconnected)", err, withRequestID(r.Context(), fields)...)
 	} else {
 		Capture(r.Context(), msg, err, fields...)
 	}
