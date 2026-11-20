@@ -12,7 +12,7 @@ decisions.
 | Import path | Tags | Depends on | Purpose |
 |---|---|---|---|
 | `github.com/SierranaTech/go-modules` | `vX.Y.Z` | stdlib only | Root module; see below |
-| `github.com/SierranaTech/go-modules/obs` | `obs/vX.Y.Z` | `getsentry/sentry-go` | Sentry init with request scrubbing, plus `Capture` / `ServerError` helpers, `Streak` for polling loops, `Recoverer` / `Go` / `Loop` for panic recovery, and `RunMonitored` for cron check-ins |
+| `github.com/SierranaTech/go-modules/obs` | `obs/vX.Y.Z` | `getsentry/sentry-go` | Sentry init with request scrubbing, plus `Capture` / `ServerError` helpers, `Streak` for polling loops, `Recoverer` / `Go` / `Loop` for panic recovery, and `RunMonitored` for cron check-ins, and `RequestID` / `PropagateRequestID` for a correlation ID across services |
 
 Root module packages:
 

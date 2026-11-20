@@ -18,8 +18,9 @@ const minLoopDelay = time.Second
 
 // Recoverer makes a handler panic reach Sentry while the client still gets a
 // JSON 500. It also gives every request the hub Capture and ServerError rely
-// on. It replaces both chi's Recoverer and sentryhttp: if chi's stays inside
-// it, chi swallows the panic and Sentry sees nothing.
+// on, tagged with the request ID when RequestID runs outside it. It replaces
+// both chi's Recoverer and sentryhttp: if chi's stays inside it, chi swallows
+// the panic and Sentry sees nothing.
 //
 // sentryhttp has to re-panic: without that it swallows the panic and the
 // client gets an empty 200. http.ErrAbortHandler carries on up to net/http,
@@ -28,7 +29,7 @@ const minLoopDelay = time.Second
 // has started cannot change the status, and the error body lands after what
 // was already written.
 func Recoverer(next http.Handler) http.Handler {
-	capture := sentryhttp.New(sentryhttp.Options{Repanic: true}).Handle(next)
+	capture := sentryhttp.New(sentryhttp.Options{Repanic: true}).Handle(tagRequestID(next))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			rec := recover()
